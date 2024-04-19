@@ -142,10 +142,11 @@ s_min = [None,-2**7,-2**15,None,-2**31,None,None,None,-2**63]
 #variable creation in compound assignment
 #delete
 #post top-level parsing sanity checks including in type parsing
+#once only
 #done ^ todo v
 #basic control flow
-#pointer arithmetic
 #constant propagation
+#pointer arithmetic
 #constant pointer types
 #mark nested object types as constant
 #figure out how to handle array length
@@ -292,6 +293,24 @@ def skip_space(line,position):
   position+=1
  return position
  
+def generate_variable_name(function):
+ char_code = -1
+ basename = "p"
+ variable_name=basename
+ while variable_name in function.variables or function.namespace.name+"_"+variable_name in programm.functions or function.namespace.name+"_"+variable_name in programm.objects:
+  char_code+=1
+  variable_name = basename
+  next_char = char_code
+  while True:
+   if next_char%36<10:
+    variable_name+=chr(next_char+0x30)
+   else:
+    variable_name+=chr(next_char+0x61-10)
+   next_char = next_char//36
+   if next_char == 0:
+    break
+ return variable_name
+ 
 def skip_nested(open,close,terminator,context,direction="right"):
  line = context.line
  offset = context.offset
@@ -345,6 +364,16 @@ def split_on_space(context):
   space = not space
  return tokens,positions
   
+def cache_in_variable(expression,context):
+ assignment = create_assignment()
+ assignment.new_variable=True
+ variable,variable_expression = new_variable(generate_variable_name(function),0,expression.components[-1].type,context)
+ variable.value = expression.components[-1].value
+ assignment.destination=variable_expression
+ assignment.expression = create_linear_expression()
+ assignment.expression.components=copy.deepcopy(expression.components)
+ assignment.expression.positions=copy.deepcopy(expression.positions)
+ return variable,assignment
 
 def parse_identifier_string(line):
  i=0
@@ -1207,8 +1236,7 @@ def parse_function_body(function):
   #binary operator maybe?
   context.expression = create_linear_expression()
   offset = parse_unary_operator_stack(context)
-  if not context.expression.components:
-   error("expected identifier",(line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+  destination_end = offset
   if not line[offset:].strip(" "):
    #naked function call
    if context.expression.components[-1].kind!="(":
@@ -1223,16 +1251,67 @@ def parse_function_body(function):
    if line[offset]=="=":
     assignment.destination = context.expression
     context.offset = offset+1
-    expression = parse_expression(context)
-    destination_type = assignment.destination.components[-1].type.kind
-    source_type = expression.components[-1].type.kind
-    if destination_type!=source_type and destination_type not in compatible_types[source_type]:
-     error("cannot assign "+source_type+" to type "+destination_type,(line_position,offset+1,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
-    assignment.expression = expression
-    control_flow_stack[-1].append(assignment)
-    continue
+    assignment.expression = parse_expression(context)
    if line[offset]=="}":
-    pass#once-only...
+    #once-only...
+    destination = context.expression
+    if destination.components[-1].kind=="[":
+     array = destination.components[-1]
+     array_position = destination.positions[-1]
+     subexpression_start = array.inputs[0]+1
+     subexpression_end = array.inputs[1]+1
+     subexpression = create_linear_expression()
+     subexpression.components = destination.components[subexpression_start:subexpression_end]
+     subexpression.positions = destination.positions[subexpression_start:subexpression_end]
+     if subexpression_start>1:
+      destination.components=destination.components[:subexpression_start]
+      destination.positions=destination.positions[:subexpression_start]
+      array_variable_position = (context.line_position,indent,destination.positions[-1][2])
+      array_variable,array_variable_assignment = cache_in_variable(destination,context)
+      control_flow_stack[-1].append(array_variable_assignment)
+     else:
+      array_variable = destination.components[0]
+      array_variable_position = destination.positions[0]
+     for i in range(len(subexpression.components)):
+      for e in range(len(subexpression.components[i].inputs)):
+       if isinstance(subexpression.components[i].inputs[e],int):
+        subexpression.components[i].inputs[e]-=subexpression_start
+     sub_variable,sub_variable_assignment = cache_in_variable(subexpression,context)
+     control_flow_stack[-1].append(sub_variable_assignment)
+     assignment.destination=create_linear_expression()
+     assignment.destination.components.append(array_variable)
+     assignment.destination.positions.append(array_variable_position)
+     assignment.destination.components.append(sub_variable)
+     assignment.destination.positions.append((context.line_position,subexpression.positions[0][1],offset))
+     array.inputs = [0,1]
+     assignment.destination.components.append(array)
+     assignment.destination.positions.append(array_position)
+     substitute = array_variable.name+"["+sub_variable.name+"]"
+    elif destination.components[-1].kind=="." and len(destination.components)>2:
+     field = destination.components[-1]
+     field_position = destination.positions[-1]
+     destination.components=destination.components[:-1]
+     destination.positions=destination.positions[:-1]
+     variable,variable_assignment = cache_in_variable(destination,context)
+     control_flow_stack[-1].append(variable_assignment)
+     assignment.destination=create_linear_expression()
+     assignment.destination.components.append(variable)
+     assignment.destination.positions.append((context.line_position,indent,offset))
+     assignment.destination.components.append(field)
+     assignment.destination.positions.append(field_position)
+     substitute = variable.name+"."+field.inputs[1]
+    else:
+     substitute = line[indent:destination_end]
+    context.line = line[:offset+1-len(substitute)]+substitute+line[offset+1:]
+    context.offset = offset+1-len(substitute)
+    assignment.expression = parse_expression(context)
+    context.line = line  
+   destination_type = assignment.destination.components[-1].type.kind
+   source_type = assignment.expression.components[-1].type.kind
+   if destination_type!=source_type and destination_type not in compatible_types[source_type]:
+    error("cannot assign "+source_type+" to type "+destination_type,(line_position,offset+1,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
+   control_flow_stack[-1].append(assignment)
+   continue
  function.body = body
     
   
