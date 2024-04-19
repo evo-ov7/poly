@@ -74,7 +74,8 @@ binary_numeric_operators = {"+","-","*","/","%",">","<",">=","<="}|binary_intege
 binary_operators = {"=","!=","?"}|binary_numeric_operators
 operators = unary_operators|binary_operators
 
-reserved_identifiers = {"v","return","delete"}
+control_flow_identifiers = {"if","else","elif","loop","break","continue"}
+reserved_identifiers = {"v","return","delete"}|control_flow_identifiers
 builtin_functions = {"delete"}
 
 unsigned_integer_types = {"b1","b2","b4","b8"}
@@ -142,9 +143,9 @@ s_min = [None,-2**7,-2**15,None,-2**31,None,None,None,-2**63]
 #variable creation in compound assignment
 #delete
 #post top-level parsing sanity checks including in type parsing
-#once only
-#done ^ todo v
+#compound operator
 #basic control flow
+#done ^ todo v
 #constant propagation
 #pointer arithmetic
 #constant pointer types
@@ -248,6 +249,14 @@ def create_type():
  type.parameters = []
  type.returns =[]
  return type
+ 
+def create_control_flow():
+ flow = pynamespace()
+ flow.kind = ""
+ flow.condition = None
+ flow.body = []
+ flow.next =None
+ return flow
  
 def warning(message,position,lineno):
  if len(position) == 1:
@@ -1105,32 +1114,66 @@ def parse_function_body(function):
  context = pynamespace()
  context.function = function
  context.namespace = function.namespace
- body = []
- control_flow_stack = [None,body]
- for line,line_position in body_lines:
+ dummy = pynamespace()
+ dummy.body =[]
+ control_flow_stack = [None,dummy]
+ for body_index,(line,line_position) in enumerate(body_lines):
   print(line)
   context.line = line
   context.line_position = line_position
   indent = len(line)-len(line.lstrip(" "))
   offset = indent
   context.offset = indent
+  identifier = parse_identifier_string(line[offset:])
+  if not identifier:
+   error("expected identifier",(line_position,indent,indent+1),inspect.getframeinfo(inspect.currentframe()).lineno)
   nesting_level = len(control_flow_stack)-1
+  last_control_flow=None
   if indent>nesting_level:
    error("unexpected indent",(line_position,nesting_level,indent),inspect.getframeinfo(inspect.currentframe()).lineno)
   if indent<nesting_level:
-   control_flow_stack = control_flow_stack[:indent+1]
-   if not control_flow_stack[-1]:
-    error("invalid indent",(line_position,1,indent),inspect.getframeinfo(inspect.currentframe()).lineno)
-  variable_name = parse_identifier_string(line[offset:])
-  if not variable_name:
-   error("expected identifier",(line_position,indent,indent+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+   if identifier in {"break","continue"}:
+    if control_flow_stack[indent].kind!="loop":
+     error("can only "+identifier+" on loop",(line_position,indent,indent+len(identifier)),inspect.getframeinfo(inspect.currentframe()).lineno)
+    for i in range(indent+1,len(control_flow_stack)-1):
+     if control_flow_stack[i].kind == "loop":
+      error("cannot "+identifier+" multiple loops",(line_position,indent,i),inspect.getframeinfo(inspect.currentframe()).lineno)
+   else:
+    last_control_flow = control_flow_stack[-1]
+    control_flow_stack = control_flow_stack[:indent+1]
+    if not control_flow_stack[-1]:
+     error("invalid indent",(line_position,1,indent),inspect.getframeinfo(inspect.currentframe()).lineno)
   variable_start = offset
-  offset+=len(variable_name)
+  offset+=len(identifier)
   offset = skip_space(line,offset)
   if offset>= len(line):
    error("incomplete expression",(line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+  if identifier in control_flow_identifiers:
+   flow = create_control_flow()
+   flow.kind = identifier
+   if flow.kind in {"else","elif"}:
+    if not last_control_flow:
+     error("missing prior if",(line_position,indent,offset),inspect.getframeinfo(inspect.currentframe()).lineno)
+    last_control_flow.next = flow
+   if flow.kind in {"if","elif"}:
+    context.offset=offset
+    context.expression=create_linear_expression()
+    parse_unary_operator_stack(context)
+    if context.expression.components[-1].type.kind not in compatible_types["integer"]:
+     error("condition must be of integer type, got "+context.expression.components[-1].type.kind,(line_position,offset,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
+    flow.condition = context.expression
+   control_flow_stack[-1].body.append(flow)
+   if flow.kind not in {"break","continue"}:
+    next_line = body_lines[body_index+1][0]
+    next_indent = len(next_line)-len(next_line.lstrip(" "))
+    if next_indent<len(control_flow_stack):
+     error("invalid indent",(body_lines[body_index+1][1],next_indent,len(control_flow_stack)),inspect.getframeinfo(inspect.currentframe()).lineno)
+    while next_indent>len(control_flow_stack):
+     control_flow_stack.append(None)
+    control_flow_stack.append(flow)
+   continue
   assignment = create_assignment()
-  if variable_name =="return":
+  if identifier =="return":
    assignment.destination="return"
    assignment.expression =[]
    i=0
@@ -1150,20 +1193,20 @@ def parse_function_body(function):
    if len(assignment.expression)!=len(function.returns):
     error("missing return value(s)",(line_position,len(line),len(line)+1),inspect.getframeinfo(inspect.currentframe()).lineno)
    assignment.special = True
-   control_flow_stack[-1].append(assignment)
+   control_flow_stack[-1].body.append(assignment)
    continue
   comma = skip_nested("(",")",",",context)
-  if not comma and line[offset]=="=" and variable_name not in function.variables:
+  if not comma and line[offset]=="=" and identifier not in function.variables:
    #new variable creation
    assignment.new_variable=True
    context.offset = offset+1
    expression = parse_expression(context)
    assignment.expression = expression
-   variable,expression = new_variable(variable_name,variable_start,expression.components[-1].type,context)
+   variable,expression = new_variable(identifier,variable_start,expression.components[-1].type,context)
    variable.value = expression.components[-1].value
-   function.variables[variable_name] = variable
+   function.variables[identifier] = variable
    assignment.destination = expression
-   control_flow_stack[-1].append(assignment)
+   control_flow_stack[-1].body.append(assignment)
    continue
   if comma and comma < len(line):
    #compound assignment
@@ -1231,7 +1274,7 @@ def parse_function_body(function):
        error("trying to assign "+compound_function.outputs[return_position].type.kind+" to "+context.expression.components[-1].type.kind,(line_position,offset,comma),inspect.getframeinfo(inspect.currentframe()).lineno)
       assignment.destination[return_position] = context.expression
     offset = comma+1
-   control_flow_stack[-1].append(assignment)
+   control_flow_stack[-1].body.append(assignment)
    continue
   #binary operator maybe?
   context.expression = create_linear_expression()
@@ -1243,7 +1286,7 @@ def parse_function_body(function):
     error("missing assignment",(line_position,indent,indent+1),inspect.getframeinfo(inspect.currentframe()).lineno)
    assignment.expression = context.expression
    assignment.special = True
-   control_flow_stack[-1].append(assignment)
+   control_flow_stack[-1].body.append(assignment)
    continue
   else:
    #general case
@@ -1268,7 +1311,7 @@ def parse_function_body(function):
       destination.positions=destination.positions[:subexpression_start]
       array_variable_position = (context.line_position,indent,destination.positions[-1][2])
       array_variable,array_variable_assignment = cache_in_variable(destination,context)
-      control_flow_stack[-1].append(array_variable_assignment)
+      control_flow_stack[-1].body.append(array_variable_assignment)
      else:
       array_variable = destination.components[0]
       array_variable_position = destination.positions[0]
@@ -1277,7 +1320,7 @@ def parse_function_body(function):
        if isinstance(subexpression.components[i].inputs[e],int):
         subexpression.components[i].inputs[e]-=subexpression_start
      sub_variable,sub_variable_assignment = cache_in_variable(subexpression,context)
-     control_flow_stack[-1].append(sub_variable_assignment)
+     control_flow_stack[-1].body.append(sub_variable_assignment)
      assignment.destination=create_linear_expression()
      assignment.destination.components.append(array_variable)
      assignment.destination.positions.append(array_variable_position)
@@ -1293,7 +1336,7 @@ def parse_function_body(function):
      destination.components=destination.components[:-1]
      destination.positions=destination.positions[:-1]
      variable,variable_assignment = cache_in_variable(destination,context)
-     control_flow_stack[-1].append(variable_assignment)
+     control_flow_stack[-1].body.append(variable_assignment)
      assignment.destination=create_linear_expression()
      assignment.destination.components.append(variable)
      assignment.destination.positions.append((context.line_position,indent,offset))
@@ -1310,11 +1353,10 @@ def parse_function_body(function):
    source_type = assignment.expression.components[-1].type.kind
    if destination_type!=source_type and destination_type not in compatible_types[source_type]:
     error("cannot assign "+source_type+" to type "+destination_type,(line_position,offset+1,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
-   control_flow_stack[-1].append(assignment)
+   control_flow_stack[-1].body.append(assignment)
    continue
- function.body = body
+ function.body = dummy.body
     
-  
 def parse_object_body(object):
  body_lines = object.body
  context = pynamespace()
