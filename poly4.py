@@ -6,8 +6,8 @@ sample_programm = """
 namespace really_long_name
 object my_obj
  bit b1
-function add()->(b1)
- return 0xa2b
+function add(x f2,y s8)->(b4,f1)
+ return 0xa2,11.037
 namespace really_long_name end
 
 namespace main
@@ -50,13 +50,13 @@ function main
  obj.leaf = my_obj()
  obj.nested.content = 32609532
  object2 = obj.leaf
- delete array
- delete object2
- delete object
+ delete(array)
+ delete(object2)
+ delete(obj)
  num1,num2 = add(1,1)
  num1,num2 = imp.add(1,1)
- array[2]=sum,y=sammy = add(x=int,y=2)
- x=sum,_ = add(y=1)
+ array[2]=sum,y=sammy = add2(x= int,y= 2)
+ x=sum,_ = add2(y= 1)
  add(1,3)
 namespace main end
 """
@@ -91,7 +91,7 @@ float_compatible_types = {"signed","unsigned","f"}|floating_point_types
 integer_compatible_types = {"integer","signed","unsigned","s","b"}|integer_types
 numeric_compatible_types = float_compatible_types|integer_compatible_types|{"numeric"}
 unspecific_types = numeric_compatible_types - default_types
-type_specificity = {"numeric":0,"integer":1,"signed":1,"unsigned":1,"s":2,"b":2,"f":2}
+type_specificity = {"*":-1,"numeric":0,"integer":1,"signed":1,"unsigned":1,"s":2,"b":2,"f":2}
 compatible_types = {"numeric":numeric_compatible_types,"signed":signed_compatible_types,"unsigned":unsigned_compatible_types,"integer":integer_compatible_types,"s":signed_integer_types|{"s"},"b":unsigned_integer_types|{"b"},"f":floating_point_types|{"f"}}
 for type in numeric_types:
  type_specificity[type]=3
@@ -140,19 +140,21 @@ s_min = [None,-2**7,-2**15,None,-2**31,None,None,None,-2**63]
 #reserved identifiers
 #constructors for the remaining types
 #variable creation in compound assignment
-#done ^ todo v
 #delete
 #post top-level parsing sanity checks including in type parsing
+#done ^ todo v
 #basic control flow
 #pointer arithmetic
 #constant propagation
 #constant pointer types
 #mark nested object types as constant
 #figure out how to handle array length
+#generics
 #reflection
 #more operators ?
 #vectors
 
+ 
  
 def create_programm():
  programm = pynamespace()
@@ -160,12 +162,14 @@ def create_programm():
  programm.name = ""
  programm.namespaces = {}
  programm.objects = {}
+ programm.parsed = False
  return programm
  
 def create_namespace():
  namespace = pynamespace()
  namespace.name = ""
  namespace.imports = {}
+ namespace.import_positions={}
  return namespace
  
 def create_function():
@@ -262,6 +266,10 @@ def warning(message,position,lineno):
 def error(message,position,lineno):
  warning(message,position,lineno)
  sys.exit(1)
+ 
+def p(*args):
+ for arg in args:
+  pprint.pprint(arg,width=180)
  
 def is_identifier_character(character):
  #ord(character)>=0x41 and ord(character)<=0x5a 
@@ -361,7 +369,15 @@ def append_expressions(expression1,expression2):
   expression1.positions.append(expression2.positions[i])
   
 def type_intersection(type1,type2):
- if type1.kind!=type2.kind and (type1.kind not in numeric_compatible_types or type2.kind not in numeric_compatible_types) or type1.pointer!=type2.pointer or (type1.size and type2.size and type1.size != type2.size) or ({"*"}&{type1.kind,type2.kind}):
+ if type1.kind == "*":
+  if type2.kind in numeric_types and not type2.pointer:
+   return None
+  return copy.deepcopy(type2)
+ if type2.kind == "*":
+  if type1.kind in numeric_types and not type1.pointer:
+   return None
+  return copy.deepcopy(type1)
+ if type1.kind!=type2.kind and (type1.kind not in numeric_compatible_types or type2.kind not in numeric_compatible_types) or type1.pointer!=type2.pointer  or (type1.size and type2.size and type1.size != type2.size):
   return None
  if type1.kind == type2.kind:
   return copy.deepcopy(type1)
@@ -408,6 +424,8 @@ def new_variable(variable_name,variable_start,variable_type,context):
   error("cannot use reserved identifier "+variable_name+" as variable",(context.line_position,variable_start,variable_start+len(variable_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
  if variable_name in context.function.namespace.imports:
   error("cannot use imported namespace "+variable_name+" as variable",(context.line_position,variable_start,variable_start+len(variable_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
+ if variable_name in context.function.variables:
+  error("variable "+variable_name+" already exists in "+context.function.name,(context.line_position,variable_start,variable_start+len(variable_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
  qualified_name = context.function.namespace.name+"_"+variable_name
  if qualified_name in programm.objects:
   error("cannot use object "+variable_name+" as variable",(context.line_position,variable_start,variable_start+len(variable_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
@@ -678,12 +696,17 @@ def parse_type(context):
   if not name:
    error("expected type name",(context.line_position,offset2,offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
   basename+=name
+  if programm.parsed and basename not in programm.objects:
+   error("unknown type "+basename,(context.line_position,offset,offset+offset2+1+len(name)),inspect.getframeinfo(inspect.currentframe()).lineno)
   offset+=len(basename)
   type.string = basename
  elif basename not in default_types:
-  offset+=len(basename)
+  offset2=len(basename)
   type.string = basename
   basename = context.namespace.name+"_"+basename
+  if programm.parsed and basename not in programm.objects:
+   error("unknown type "+basename,(context.line_position,offset,offset+offset2),inspect.getframeinfo(inspect.currentframe()).lineno)
+  offset+=offset2
  else:
   offset+=len(basename)
   type.string = basename
@@ -759,7 +782,7 @@ def parse_unary_operator(operator,context):
     error("got type "+subexpression_type+" for array access",(context.line_position,offset,subexpression_end),inspect.getframeinfo(inspect.currentframe()).lineno)
    append_expressions(context.expression,subexpression)
    operation.inputs.append(len(context.expression.components)-1)
-   operation.type = copy.deepcopy(subexpression_type)
+   operation.type = copy.deepcopy(input.type)
    operation.type.pointer = None
    return operation,subexpression_end+1
   elif operator == "(":
@@ -811,11 +834,12 @@ def parse_unary_operator(operator,context):
      position = positions[i]
      parameter_name = parse_identifier_string(subexpression)
      offset2 = len(parameter_name)
-     if parameter_name and offset2+2<len(subexpression) and subexpression[offset2:offset2+3]=="= ":
+     if parameter_name and offset2+2<len(subexpression) and subexpression[offset2:offset2+2]=="= ":
       positionals=False
       if parameter_name not in function.parameter_names:
        error("parameter "+parameter_name+" not in function "+function.name,(context.line_position,position,position+len(parameter_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
-      parameter_location = function.parameters.find(function.parameter_names[parameter_name])
+      parameter_location = function.parameters.index(function.parameter_names[parameter_name])
+      offset2+=2
      else:
       if not positionals:
        error("positional parameter after named parameter",(context.line_position,position,position+len(subexpression)),inspect.getframeinfo(inspect.currentframe()).lineno)
@@ -824,13 +848,13 @@ def parse_unary_operator(operator,context):
      if operation.inputs[parameter_location+1]!=None:
       error("duplicate parameter "+str(parameter_location),(context.line_position,position,position+len(subexpression)),inspect.getframeinfo(inspect.currentframe()).lineno)
      parameter = function.parameters[parameter_location]
-     context.offset = position
+     context.offset = position+offset2
      context.line = line[:position+len(subexpression)]
      old_expression = context.expression
      result = parse_expression(context)
      context.line = line
      if not type_intersection(parameter.type,result.components[-1].type):
-      error("got type "+result.type.kind+" for parameter of type "+parameter.type.kind,(context.line_position,position,position+len(subexpression)),inspect.getframeinfo(inspect.currentframe()).lineno)
+      error("got type "+result.components[-1].type.kind+" for parameter of type "+parameter.type.kind,(context.line_position,position,position+len(subexpression)),inspect.getframeinfo(inspect.currentframe()).lineno)
      append_expressions(old_expression,result)
      context.expression = old_expression
      operation.inputs[parameter_location+1]= len(context.expression.components)-1
@@ -902,7 +926,12 @@ def parse_unary_operator_stack(context):
    elif identifier in builtin_functions:
     builtin = create_function()
     builtin.name = identifier
-    
+    parameter = create_variable()
+    parameter.type = create_type()
+    if identifier == "delete":
+     parameter.type.kind = "*"
+     builtin.parameters.append(parameter)
+    identifier_object = builtin
    else:
     error("undefined variable "+identifier,(context.line_position,offset-len(identifier),offset),inspect.getframeinfo(inspect.currentframe()).lineno)
   context.expression.components.append(identifier_object)
@@ -1050,6 +1079,7 @@ def parse_function_body(function):
  body = []
  control_flow_stack = [None,body]
  for line,line_position in body_lines:
+  print(line)
   context.line = line
   context.line_position = line_position
   indent = len(line)-len(line.lstrip(" "))
@@ -1093,7 +1123,8 @@ def parse_function_body(function):
    assignment.special = True
    control_flow_stack[-1].append(assignment)
    continue
-  if line[offset]=="=" and variable_name not in function.variables:
+  comma = skip_nested("(",")",",",context)
+  if not comma and line[offset]=="=" and variable_name not in function.variables:
    #new variable creation
    assignment.new_variable=True
    context.offset = offset+1
@@ -1105,15 +1136,14 @@ def parse_function_body(function):
    assignment.destination = expression
    control_flow_stack[-1].append(assignment)
    continue
-  comma = skip_nested("(",")",",",context)
   if comma and comma < len(line):
    #compound assignment
    assignment.special = True
    context.offset = len(line)-1
-   expression_start = skip_nested("(",")","=",context,"reverse")
-   if not expression_start or expression_start<comma:
+   expression_seperator = skip_nested("(",")","=",context,"reverse")
+   if not expression_seperator or expression_seperator<comma:
     error("expected = for compound assignment",(line_position,len(line)-1,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
-   expression_start = skip_space(line,expression_start+1)
+   expression_start = skip_space(line,expression_seperator+1)
    context.offset = expression_start
    context.expression = create_linear_expression()
    parse_unary_operator_stack(context)
@@ -1128,35 +1158,39 @@ def parse_function_body(function):
    assignment.destination = []
    for i in range(len(compound_function.outputs)):
     assignment.destination.append(None)
-   while True:
+   while comma<expression_seperator:
     context.offset = offset
     comma = skip_nested("(",")",",",context)
-    if comma>=len(line):
-     break
-    end = comma-1
-    while line[end]==" ":
+    if not comma:
+     comma=expression_seperator
+    end = comma
+    while line[end-1]==" ":
      end-=1
     equals = line[:end].rfind("=")
+    subexpression_start = skip_space(line,offset)
     return_name = parse_identifier_string(line[equals+1:])
-    if return_name == line[equals+1:end]:
+    if equals>offset and return_name == line[equals+1:end]:
      positionals=False
      if return_name in given_names:
-      error("return value "+return_name+" already assigned",(line_position,equals,end+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+      error("return value "+return_name+" already assigned",(line_position,equals,end),inspect.getframeinfo(inspect.currentframe()).lineno)
      given_names.add(return_name)
      if return_name not in compound_function.output_names:
-      error("function returns no value "+return_name,(line_position,equals,end+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-     return_position = compound_function.outputs.find(compound_function.output_names[return_name])
-     end = equals-1
-    else:
+      error("function returns no value "+return_name,(line_position,equals,end),inspect.getframeinfo(inspect.currentframe()).lineno)
+     return_position = compound_function.outputs.index(compound_function.output_names[return_name])
+     end = equals
+    elif line[subexpression_start:subexpression_start+2]not in{"_ ","_,","_="}:
      if not positionals:
-      error("positional return after named return",(line_position,offset,comma),inspect.getframeinfo(inspect.currentframe()).lineno)
+      error("positional return after named return",(line_position,offset,end),inspect.getframeinfo(inspect.currentframe()).lineno)
+     if return_count>=len(compound_function.outputs):
+      error("function is out of return values",(line_position,offset,end),inspect.getframeinfo(inspect.currentframe()).lineno)
      return_position = return_count
      return_name = compound_function.outputs[return_position].name
      given_names.add(return_name)
      return_count+=1
-    context.offset = skip_space(line,offset)
-    if line[context.offset] != "_":
-     if context.offset+len(parse_identifier_string(line,context.offset))-1 == end:
+    if line[subexpression_start:subexpression_start+2] not in  {"_ ","_,","_="}:
+     context.offset = subexpression_start
+     first_identifier = parse_identifier_string(line[context.offset:])
+     if first_identifier not in function.variables and context.offset+len(first_identifier) == end:
       variable,variable_expression = new_variable(line[context.offset:end],context.offset,compound_function.outputs[return_position].type,context)
       variable.value = compound_function.outputs[return_position].value
       function.variables[variable.name]=variable
@@ -1286,6 +1320,7 @@ def parse_import_declaration(context):
  if name2 in reserved_identifiers:
   error("cannot use reserved name "+name2+" as import",(context.line_position,context.offset,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
  programm.namespaces[context.namespace.name].imports[name2]=name
+ programm.namespaces[context.namespace.name].import_positions[name2]=context.line_position
  
 def parse_object_declaration(context):
  line = context.line
@@ -1361,6 +1396,8 @@ def parse_top_level(context):
  #no custom types for now
  else:
   error("expected top-level statement, but got "+declaration,(context.line_position,0,1),inspect.getframeinfo(inspect.currentframe()).lineno)
+ if body:
+  body.position=context.line_position
  return body
   
 def parse(lines):
@@ -1387,7 +1424,17 @@ def parse(lines):
     top_level.body.append((line,position))
    else:
     top_level = parse_top_level(context)
- #sanity checks
+ programm.parsed = True
+ for space in programm.namespaces.values():
+  for space2 in space.imports:
+   if space.imports[space2] not in programm.namespaces:
+    error("unknown namespace "+space.imports[space2],(space.import_positions[space2]),inspect.getframeinfo(inspect.currentframe()).lineno)
+ for function in programm.functions.values():
+  for parameter in function.parameters:
+   if parameter.type.kind not in default_types:
+    if parameter.type.kind not in programm.objects:
+     error("unknown object "+parameter.type.kind,(function.position),inspect.getframeinfo(inspect.currentframe()).lineno)
+
  for object in programm.objects.values():
   parse_object_body(object)
  for function in programm.functions.values():
@@ -1399,5 +1446,5 @@ def parse(lines):
 source = sample_programm
 source_lines = source.split("\n")
 programm = parse(source_lines)
-pprint.pprint(programm,width=180)
+p(programm)
 
