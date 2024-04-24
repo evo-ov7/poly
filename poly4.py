@@ -42,7 +42,7 @@ function main
  double = 0d
  half = 0h
  tiny = 0q
- array = b4(20)
+ array = b4*(20)
  int = array[4]
  //array2 = array+4
  obj = my_obj()
@@ -62,17 +62,28 @@ namespace main end
 """
 
 
-operator_symbols = {"+","-","*","/","~","^","!","=",">","<","|","&","?","%","#"}
-unary_float_operators = {"~.","~^","~v"}
-unary_integer_operators = {"+#1","+0..","+..0"}
-unary_numeric_operators = {"+","-","~"}|unary_integer_operators|unary_float_operators
-unary_access_operators = {".","[","("}
-unary_operators = unary_float_operators | unary_integer_operators| unary_numeric_operators | unary_access_operators
+operator_symbols = {"+","-","*","/","~","^","!","=",">","<","|","&","%","#"}
+unary_float_operators = {"~>","~.","~^","~v"}
+unary_integer_operators = {"+#1","+0..","+..0","~"}
+unary_numeric_operators = {"+1","-1"}|unary_float_operators | unary_integer_operators
+unary_access_operators = {".","[","(","c"}
+unary_operators = unary_numeric_operators | unary_access_operators
 binary_asymetric_operators = {">>","<<",">>>","<<<"}
 binary_integer_operators = {"^","&","|"}|binary_asymetric_operators
 binary_numeric_operators = {"+","-","*","/","%",">","<",">=","<="}|binary_integer_operators
-binary_operators = {"=","!=","?"}|binary_numeric_operators
+binary_operators = {"=","!="}|binary_numeric_operators
 operators = unary_operators|binary_operators
+
+literal_unary_float_operators = {"~.","~^","~v"}
+literal_unary_integer_operators = {"+#1","+0..","+..0"}
+literal_unary_numeric_operators = {"+","-","~"}|unary_integer_operators|unary_float_operators
+literal_unary_access_operators = {".","[","("}
+literal_unary_operators = unary_float_operators | unary_integer_operators| literal_unary_numeric_operators | literal_unary_access_operators
+literal_binary_asymetric_operators = {">>","<<",">>>","<<<"}
+literal_binary_integer_operators = {"^","&","|"}|literal_binary_asymetric_operators
+literal_binary_numeric_operators = {"+","-","*","/","%",">","<",">=","<="}|literal_binary_integer_operators
+literal_binary_operators = {"=","!="}|literal_binary_numeric_operators
+literal_operators = literal_unary_operators|literal_binary_operators
 
 control_flow_identifiers = {"if","else","elif","loop","break","continue"}
 reserved_identifiers = {"v","return","delete"}|control_flow_identifiers
@@ -100,39 +111,45 @@ for type in numeric_types:
 b_max = [None,2**8-1,2**16-1,None,2**32-1,None,None,None,2**64-1]
 s_max = [None,2**7-1,2**15-1,None,2**31-1,None,None,None,2**63-1]
 s_min = [None,-2**7,-2**15,None,-2**31,None,None,None,-2**63]
+bit_size = [None,8,16,None,32,None,None,None,64]
+type_mask = [None,0xff,0xffff,None,0xffffffff,None,None,None,0xffffffffffffffff]
+sign_mask = [None,0x80,0x8000,None,0x80000000,None,None,None,0x8000000000000000]
+bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 
 
-#unused symbols ` ' " ; @ $ \ : { }
+
+#unused symbols ` ' " ; @ $ \ : { } ?
 #unary operators
-# + absolute value
-# - negate
-# ! invert
-# ~ round to nearest
-# ~. round to zero
-# ~^ round to infinity
+# + absolute value            only for signed/floats
+# - negate                    only for signed/floats
+# ~ invert                    
+#                             rounding to zero may result in either 0 or -0
+# ~ round to nearest          in case of multiple nearest values, the result may be any of them
+# ~. round to zero            
+# ~^ round to infinity        
 # ~v ~_ round to -infinity
 # +#1 popcount
 # +0.. count leading zeros
 # +..0 count trailing zeros
-# (type) typeconversion
+# (type) typeconversion       conversion of values is only defined, if the target type can contain (even just approximatley) the converted value. the only excepiton are signed/unsigned integers where conversions between types of equal size use the two's complement representation
 # . component access
 # [ array access
 # (arg,arg2) function call
 #
 #binary operators
-# + add
-# - subtract
-# * multiply
-# / division  semantics?
-# % mod/remainder  semantics?
+# + add                          overflow is always mod 2^N
+# - subtract                     overflow is always mod 2^N
+# * multiply                     result is the lower half of the true result, overflow is mod 2^N
+# / division                     result is the quotient rounded towards zero, overflow is mod 2^N, if the divisor is 0 the result is 0
+# % mod/remainder                result is the remainder with same sign as dividend, if the divisor is 0 the result is the dividend
 # ^ xor
 # & and
 # | or
-# >> << bitshift
+# >> << bitshift                 signed right shift is sign-extending
 # >>> <<< rotate?
-# > < >= <= = != comparison
+# > < >= <= = != comparison      
 #
-#function operators
+#function operators?
 # min max
 # sqrt sin cos etc
 # floating point extraction functions?
@@ -145,16 +162,24 @@ s_min = [None,-2**7,-2**15,None,-2**31,None,None,None,-2**63]
 #post top-level parsing sanity checks including in type parsing
 #compound operator
 #basic control flow
+#type propagation
 #done ^ todo v
-#constant propagation
+#avoid reserved identifiers
+#translate uncommon operators
+#break down big expression on demand
 #pointer arithmetic
 #constant pointer types
+#constant optimization
+#print types correctly in error messages
 #mark nested object types as constant
 #figure out how to handle array length
+#preserve constant base
+#preserve comments
 #generics
 #reflection
 #more operators ?
 #vectors
+#atomics
 
  
  
@@ -165,6 +190,8 @@ def create_programm():
  programm.namespaces = {}
  programm.objects = {}
  programm.parsed = False
+ programm.global_prefix = ""
+ programm.next_identifier =0
  return programm
  
 def create_namespace():
@@ -197,6 +224,7 @@ def create_object():
  object.variables = {}
  object.body = []
  object.type = None
+ object.inputs=[]
  return object
  
 def create_variable():
@@ -218,6 +246,7 @@ def create_constant():
  
 def create_assignment():
  assignment = pynamespace()
+ assignment.kind = "assignment"
  assignment.destination = None
  assignment.expression = None
  assignment.new_variable = False
@@ -244,6 +273,7 @@ def create_type():
  type.kind = ""
  type.pointer = None
  type.length = None
+ type.nested = None
  type.size = None
  type.string = ""
  type.parameters = []
@@ -302,22 +332,47 @@ def skip_space(line,position):
   position+=1
  return position
  
+def type_to_string(type):
+ string=type.kind
+ if type.pointer:
+  string+="*"
+ if type.kind=="fun" and not type.void:
+  string+="("
+  for parameter in type.parameters:
+   if parameter.name:
+    string+=parameter.name+" "
+   string+=type_to_string(parameter.type)
+   string+=","
+  if string[-1]==",":
+   string = string[:-1]
+  string+=")->("
+  for parameter in type.returns:
+   if parameter.name:
+    string+=parameter.name+" "
+   string+=type_to_string(parameter.type)
+   string+=","
+  if string[-1]==",":
+   string = string[:-1]
+  string+=")"
+ return string
+ 
+def generate_identifier():
+ number=programm.next_identifier
+ basename="p"
+ while number!=0:
+  if number%36<10:
+   basename+=chr(number%36+0x30)
+  else:
+   basename+=chr(number%36+0x61-10)
+  number//=36
+ programm.next_identifier+=1
+ return basename
+ 
 def generate_variable_name(function):
- char_code = -1
- basename = "p"
- variable_name=basename
- while variable_name in function.variables or function.namespace.name+"_"+variable_name in programm.functions or function.namespace.name+"_"+variable_name in programm.objects:
-  char_code+=1
-  variable_name = basename
-  next_char = char_code
-  while True:
-   if next_char%36<10:
-    variable_name+=chr(next_char+0x30)
-   else:
-    variable_name+=chr(next_char+0x61-10)
-   next_char = next_char//36
-   if next_char == 0:
-    break
+ while True:
+  variable_name = generate_identifier()
+  if variable_name not in function.variables and function.namespace.name+"_"+variable_name not in programm.functions and function.namespace.name+"_"+variable_name not in programm.objects:
+   break
  return variable_name
  
 def skip_nested(open,close,terminator,context,direction="right"):
@@ -343,7 +398,7 @@ def skip_nested(open,close,terminator,context,direction="right"):
 def is_unary_operator(string):
  length = min(4,len(string))
  while length>0:
-  if string[:length] in unary_operators:
+  if string[:length] in literal_unary_operators:
    return string[:length]
   length-=1
  return ""
@@ -351,7 +406,7 @@ def is_unary_operator(string):
 def is_binary_operator(string):
  length = min(3,len(string))
  while length>0:
-  if string[:length] in binary_operators:
+  if string[:length] in literal_binary_operators:
    return string[:length]
   length-=1
  return ""
@@ -480,6 +535,34 @@ def new_variable(variable_name,variable_start,variable_type,context):
  expression.positions.append((context.line_position,variable_start,variable_start+len(variable_name)))
  return variable,expression
   
+def propagate_types(expression,context):
+ change=True
+ while change:
+  change=False
+  for operator in expression.components:
+   if operator.type and operator.type.kind not in unspecific_types:
+    for index,input in enumerate(operator.inputs):
+     if isinstance(input,int) and expression.components[input].type:
+      if expression.components[input].type.kind in unspecific_types:
+       change=True
+       if operator.kind not in binary_asymetric_operators or index==0:
+        expression.components[input].type = copy.deepcopy(operator.type)
+        if operator.kind=="constant":
+         if operator.type in integer_types:
+          operator.value = int(operator.value)
+       else:
+        new_type = create_type()
+        if expression.components[input].type.kind in {"s","signed"}:
+         new_type.kind="s1"
+        else:
+         new_type.kind="b1"
+        new_type.size=1
+        new_type.string=new_type.kind
+        expression.components[input].type = new_type
+ for index,operator in enumerate(expression.components):
+  if operator.type and operator.type.kind in unspecific_types:
+   error("couldn't statically type "+operator.type.kind,expression.positions[index],inspect.getframeinfo(inspect.currentframe()).lineno)
+
 def parse_constant(context):
  line = context.line
  offset = context.offset
@@ -537,7 +620,7 @@ def parse_constant(context):
  type = create_type()
  value = None
  if mode == "decimal":
-  value = int(number)
+  value = float(number)
  elif mode == "fraction":
   value = float(number)
  elif mode == "binary":
@@ -564,6 +647,7 @@ def parse_constant(context):
  if size_suffix in {"b","s","i","l"}:
   if mode =="fraction":
    error("invalid floating point suffix "+size_suffix,(context.line_position,offset-len(sign_suffix),offset+1-len(sign_suffix)),inspect.getframeinfo(inspect.currentframe()).lineno)
+  value = int(value)
   size = suffixes[size_suffix]
   type.size = size
   if value > b_max[size] or value< s_min[size]:
@@ -583,6 +667,7 @@ def parse_constant(context):
  elif mode == "fraction":
   type.kind = "f"
  elif sign_suffix:
+  value = int(value)
   if mode in {"binary","hexadecimal"}:
    if sign_suffix == "+":
     type.kind = "b"
@@ -594,6 +679,7 @@ def parse_constant(context):
    else:
     type.kind = "signed"
  elif mode in {"binary","hexadecimal"}:
+  value=int(value)
   type.kind = "integer"
  else:
   type.kind = "numeric"
@@ -761,10 +847,16 @@ def parse_type(context):
     offset+=1
    if offset>start:
     type.length = int(line[start:offset])
+    type.nested = True
     type.string += line[start:offset]
-  if basename == "fun" and line[offset]=="(":
-   context.offset=offset
-   type.parameters,type.returns,type.string,type.parameter_names,type.return_names = parse_function_signature(context)
+  if basename == "fun":
+   if line[offset]=="(":
+    type.void=False
+    context.offset=offset
+    type.parameters,type.returns,type.string,type.parameter_names,type.return_names = parse_function_signature(context)
+   else:
+    type.void=True
+    type.string = type.string[:3]+"*"+type.string[3:]
  return type
  
 def parse_unary_operator(operator,context):
@@ -774,13 +866,13 @@ def parse_unary_operator(operator,context):
  operation = create_operation()
  operation.kind = operator
  operation.inputs = [len(context.expression.components)-1]
- if operator in unary_numeric_operators:
+ if operator in literal_unary_numeric_operators:
   if input.type.kind not in numeric_compatible_types:
    error("expected number for "+operator+" but got "+input.type.kind,context.expression.positions[-1],inspect.getframeinfo(inspect.currentframe()).lineno)
   operator_type = create_type()
-  if operator in unary_float_operators:
+  if operator in literal_unary_float_operators:
    operator_type.kind="f"
-  elif operator in unary_integer_operators:
+  elif operator in literal_unary_integer_operators:
    operator_type.kind="integer"
   else:
    operator_type.kind="numeric"
@@ -791,7 +883,7 @@ def parse_unary_operator(operator,context):
   if input.value:
    pass#precompute
   return operation,context.offset+len(operator)
- elif operator in unary_access_operators:
+ elif operator in literal_unary_access_operators:
   if operator == ".":
    compartment_name = parse_identifier_string(line[offset+1:])
    if not compartment_name:
@@ -813,11 +905,25 @@ def parse_unary_operator(operator,context):
    offset+=1
    context.offset = offset
    context.line = line[:subexpression_end]
+   old_expression = context.expression
    subexpression = parse_expression(context)
+   context.expression = old_expression
    subexpression_type =subexpression.components[-1].type
    context.line = line
-   if subexpression_type.kind in compatible_types["f"]:
-    error("got type "+subexpression_type+" for array access",(context.line_position,offset,subexpression_end),inspect.getframeinfo(inspect.currentframe()).lineno)
+   new_type = create_type()
+   new_type.kind="integer"
+   new_type = type_intersection(subexpression_type,new_type)
+   if not new_type:
+    error("got type "+subexpression_type.string+" for array access",(context.line_position,offset,subexpression_end),inspect.getframeinfo(inspect.currentframe()).lineno)
+   if subexpression_type.kind in unspecific_types:
+    if new_type.kind in unspecific_types:
+     if new_type.kind == "s":
+      new_type.kind="s4"
+     else:
+      new_type.kind="b4"
+     new_type.size=4
+     new_type.string = new_type.kind
+    subexpression.components[-1].type = new_type
    append_expressions(context.expression,subexpression)
    operation.inputs.append(len(context.expression.components)-1)
    operation.type = copy.deepcopy(input.type)
@@ -826,6 +932,7 @@ def parse_unary_operator(operator,context):
   elif operator == "(":
    if input.kind!="function" and input.kind!="object" and (input.type.kind!="fun" or  parse_identifier_string(line[offset+1:]) == "fun"):
     #typeconversion
+    operation.kind="c"
     offset+=1
     if offset>=len(line):
      error("missing type",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
@@ -833,12 +940,18 @@ def parse_unary_operator(operator,context):
     target_type = parse_type(context)
     if line[offset+len(target_type.string)]!=")":
      error("trailing characters after type",(context.line_position,offset+len(target_type.string),offset+len(target_type.string)+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-    if target_type.kind in numeric_compatible_types != input.type.kind in numeric_compatible_types:
-     error("cannot convert type "+input.type.kind+" into "+target_type.kind,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
-    if target_type.pointer != input.type.pointer:
-     error("cannot convert type "+input.type.kind+" into "+target_type.kind,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
-    if target_type.pointer and target_type in numeric_types and input.type.size and target_type.size>input.type.size:
-     error("cannot convert type "+input.type.kind+" into "+target_type.kind,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+    if target_type.kind!="*" and input.type.kind!="*":
+     if target_type.kind in numeric_compatible_types != input.type.kind in numeric_compatible_types:
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+     if target_type.pointer != input.type.pointer:
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+     if target_type.pointer and target_type in numeric_types and input.type.size and target_type.size>input.type.size:
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+    else:
+     if target_type.kind in numeric_compatible_types and not target_type.pointer:
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+     if input.type.kind in numeric_compatible_types and not input.type.pointer:
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
     operation.inputs.append(target_type)
     operation.type = target_type
     return operation,offset+len(target_type.string)+1
@@ -891,8 +1004,10 @@ def parse_unary_operator(operator,context):
      old_expression = context.expression
      result = parse_expression(context)
      context.line = line
-     if not type_intersection(parameter.type,result.components[-1].type):
-      error("got type "+result.components[-1].type.kind+" for parameter of type "+parameter.type.kind,(context.line_position,position,position+len(subexpression)),inspect.getframeinfo(inspect.currentframe()).lineno)
+     new_type = type_intersection(parameter.type,result.components[-1].type)
+     if not new_type:
+      error("got type "+result.components[-1].type.string+" for parameter of type "+parameter.type.string,(context.line_position,position,position+len(subexpression)),inspect.getframeinfo(inspect.currentframe()).lineno)
+     result.components[-1].type = new_type
      append_expressions(old_expression,result)
      context.expression = old_expression
      operation.inputs[parameter_location+1]= len(context.expression.components)-1
@@ -910,6 +1025,8 @@ def parse_unary_operator(operator,context):
        operation.inputs[i+1]= len(context.expression.components)-1
      if len(function.returns)==1:
       operation.type = copy.deepcopy(function.returns[0].type)
+     elif len(function.returns)>1:
+      operation.type = copy.deepcopy(function.type)
      operation.outputs = copy.deepcopy(function.returns)
      operation.output_names = function.return_names
     else:
@@ -926,8 +1043,7 @@ def parse_unary_operator(operator,context):
     return operation,end
  else:
   error("unknown unary operator "+operator,(context.line_position,context.offset,context.offset+len(operator)),inspect.getframeinfo(inspect.currentframe()).lineno)
-  
-    
+
 def parse_unary_operator_stack(context):
  line = context.line
  offset = context.offset
@@ -960,6 +1076,9 @@ def parse_unary_operator_stack(context):
     type = create_object()
     type.name = identifier
     type.type = parse_type(context)
+    offset-=len(identifier)
+    identifier = line[offset:offset+len(type.type.string)]
+    offset +=len(type.type.string)
     identifier_object = type
    elif identifier in builtin_functions:
     builtin = create_function()
@@ -986,7 +1105,7 @@ def parse_unary_operator_stack(context):
    return offset
   operator = is_unary_operator(line[offset:])
   if operator:
-   if operator[-1] in binary_operators:
+   if operator[-1] in literal_binary_operators:
     if line[offset+len(operator)]==" " or is_character(line[offset+len(operator)]):
      if not len(operator)>1:
       return offset
@@ -1009,23 +1128,23 @@ def parse_binary_operator(operator,operand1_index,context):
  operation.inputs = [operand1_index,len(context.expression.components)-1]
  operand1 = context.expression.components[operand1_index]
  operand2 = context.expression.components[-1]
- if operator not in binary_asymetric_operators and not type_intersection(operand1.type,operand2.type):
+ if operator not in literal_binary_asymetric_operators and not type_intersection(operand1.type,operand2.type):
   error("invalid types "+operand1.type.kind+" , "+operand2.type.kind+" for operator "+operator,(context.line_position,context.offset,context.offset+len(operator)),inspect.getframeinfo(inspect.currentframe()).lineno)
- if operator in binary_numeric_operators:
+ if operator in literal_binary_numeric_operators:
   if operand1.type.kind not in numeric_compatible_types:
    error("invalid type "+operand1.type.kind+" for operator "+operator,context.expression.positions[operand1_index],inspect.getframeinfo(inspect.currentframe()).lineno)
   if operand2.type.kind not in numeric_compatible_types:
    error("invalid type "+operand2.type.kind+" for operator "+operator,context.expression.positions[-1],inspect.getframeinfo(inspect.currentframe()).lineno)
- if operator not in binary_numeric_operators and operand1.type.kind != operand2.type.kind or ({operand1.type.kind,operand2.type.kind}&{"*"}):
+ if operator not in literal_binary_numeric_operators and operand1.type.kind != operand2.type.kind or ({operand1.type.kind,operand2.type.kind}&{"*"}):
   error("invalid types "+operand1.type.kind+" , "+operand2.type.kind+" for operator "+operator,(context.line_position,context.offset,context.offset+len(operator)),inspect.getframeinfo(inspect.currentframe()).lineno)
- if operator in binary_integer_operators:
+ if operator in literal_binary_integer_operators:
   if operand1.type.kind not in compatible_types["integer"]:
    error("invalid type "+operand1.type.kind+" for operator "+operator,context.expression.positions[operand1_index],inspect.getframeinfo(inspect.currentframe()).lineno)
   if operand2.type.kind not in compatible_types["integer"]:
    error("invalid type "+operand2.type.kind+" for operator "+operator,context.expression.positions[-1],inspect.getframeinfo(inspect.currentframe()).lineno)
    
- if operator in binary_numeric_operators:
-  if operator in binary_asymetric_operators:
+ if operator in literal_binary_numeric_operators:
+  if operator in literal_binary_asymetric_operators:
    if operand1.type.kind not in numeric_types or operand2.type.kind not in numeric_types:
     pass#precompute
    operation.type = copy.deepcopy(operand1.type)
@@ -1157,12 +1276,25 @@ def parse_function_body(function):
     last_control_flow.next = flow
    if flow.kind in {"if","elif"}:
     context.offset=offset
-    context.expression=create_linear_expression()
-    parse_unary_operator_stack(context)
-    if context.expression.components[-1].type.kind not in compatible_types["integer"]:
+    condition = parse_expression(context)
+    new_type = create_type()
+    new_type.kind = "integer"
+    new_type = type_intersection(condition.components[-1].type,new_type)
+    if not new_type:
      error("condition must be of integer type, got "+context.expression.components[-1].type.kind,(line_position,offset,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
+    if condition.components[-1].type.kind in unspecific_types:
+     if new_type.kind in unspecific_types:
+      if new_type.kind in {"s","signed"}:
+       new_type.kind="s4"
+      else:
+       new_type.kind="b4"
+      new_type.size=4
+      new_type.string=new_type.kind
+     condition.components[-1].type.kind=new_type
     flow.condition = context.expression
    control_flow_stack[-1].body.append(flow)
+   if flow.kind in {"if","elif"}:
+    propagate_types(flow.condition,context)
    if flow.kind not in {"break","continue"}:
     next_line = body_lines[body_index+1][0]
     next_indent = len(next_line)-len(next_line.lstrip(" "))
@@ -1187,6 +1319,8 @@ def parse_function_body(function):
     context.line = line
     if not type_intersection(expression.components[-1].type,function.returns[i].type):
      error("return value is of type "+expression.components[-1].type.kind+" but should be "+function.returns[i].type.kind,(line_position,offset,end),inspect.getframeinfo(inspect.currentframe()).lineno)
+    expression.components[-1].type = copy.deepcopy(function.returns[i].type)
+    propagate_types(expression,context)
     assignment.expression.append(expression)
     offset= skip_space(line,end+1)
     i+=1
@@ -1202,11 +1336,13 @@ def parse_function_body(function):
    context.offset = offset+1
    expression = parse_expression(context)
    assignment.expression = expression
+   propagate_types(expression,context)
    variable,expression = new_variable(identifier,variable_start,expression.components[-1].type,context)
    variable.value = expression.components[-1].value
    function.variables[identifier] = variable
    assignment.destination = expression
    control_flow_stack[-1].body.append(assignment)
+   propagate_types(expression,context)
    continue
   if comma and comma < len(line):
    #compound assignment
@@ -1228,8 +1364,10 @@ def parse_function_body(function):
    positionals =True
    return_count=0
    assignment.destination = []
+   assignment.new_variable=[]
    for i in range(len(compound_function.outputs)):
     assignment.destination.append(None)
+    assignment.new_variable.append(False)
    while comma<expression_seperator:
     context.offset = offset
     comma = skip_nested("(",")",",",context)
@@ -1267,14 +1405,17 @@ def parse_function_body(function):
       variable.value = compound_function.outputs[return_position].value
       function.variables[variable.name]=variable
       assignment.destination[return_position] = variable_expression
+      assignment.new_variable[return_position] = True
      else:
       context.expression = create_linear_expression()
       parse_unary_operator_stack(context)
       if context.expression.components[-1].type.kind != compound_function.outputs[return_position].type.kind:
        error("trying to assign "+compound_function.outputs[return_position].type.kind+" to "+context.expression.components[-1].type.kind,(line_position,offset,comma),inspect.getframeinfo(inspect.currentframe()).lineno)
       assignment.destination[return_position] = context.expression
+      propagate_types(context.expression,context)
     offset = comma+1
    control_flow_stack[-1].body.append(assignment)
+   propagate_types(assignment.expression,context)
    continue
   #binary operator maybe?
   context.expression = create_linear_expression()
@@ -1287,10 +1428,12 @@ def parse_function_body(function):
    assignment.expression = context.expression
    assignment.special = True
    control_flow_stack[-1].body.append(assignment)
+   propagate_types(assignment.expression,context)
    continue
   else:
    #general case
    offset = skip_space(line,offset)
+   propagate_types(context.expression,context)
    if line[offset]=="=":
     assignment.destination = context.expression
     context.offset = offset+1
@@ -1349,11 +1492,14 @@ def parse_function_body(function):
     context.offset = offset+1-len(substitute)
     assignment.expression = parse_expression(context)
     context.line = line  
-   destination_type = assignment.destination.components[-1].type.kind
-   source_type = assignment.expression.components[-1].type.kind
-   if destination_type!=source_type and destination_type not in compatible_types[source_type]:
-    error("cannot assign "+source_type+" to type "+destination_type,(line_position,offset+1,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
+   destination_type = assignment.destination.components[-1].type
+   source_type = assignment.expression.components[-1].type
+   new_type = type_intersection(destination_type,source_type)
+   if not new_type:
+    error("cannot assign "+source_type.string+" to type "+destination_type.string,(line_position,offset+1,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
+   assignment.expression.components[-1].type = new_type
    control_flow_stack[-1].body.append(assignment)
+   propagate_types(assignment.expression,context)
    continue
  function.body = dummy.body
     
@@ -1482,6 +1628,7 @@ def parse_function_declaration(context):
  function.type = create_type()
  function.type.kind="fun"
  function.type.string=line[offset:]
+ function.type.void = False
  function.value = function.name
  offset+=len(name)
  if line[offset:]:
@@ -1489,8 +1636,8 @@ def parse_function_declaration(context):
    error("expected (",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
   context.offset = offset
   function.parameters,function.returns,_,function.parameter_names,function.return_names = parse_function_signature(context)
-  function.type.parameters = copy.deepcopy(function.parameters)
-  function.type.returns = copy.deepcopy(function.returns)
+ function.type.parameters = copy.deepcopy(function.parameters)
+ function.type.returns = copy.deepcopy(function.returns)
  programm.functions[qualified_name]= function
  for parameter in function.parameters:
   variable = copy.deepcopy(parameter)
@@ -1562,10 +1709,450 @@ def parse(lines):
   parse_function_body(function)
  return programm
   
+def c_create_options():
+ c_options = pynamespace()
+ c_options.typedef = False
+ c_options.precise_types = False
+ c_options.preserve_field_order = False
+ return c_options
  
-
+def c_create_context():
+ c_context = pynamespace()
+ c_context.options = None
+ c_context.c_type = c_default_type
+ c_context.returntypes = {}
+ c_context.variables = set()
+ c_context.object_alignments = {}
+ c_context.spilled_variables = set()
+ return c_context
+ 
+def c_create_expression():
+ c_expression = pynamespace()
+ c_expression.translation = ""
+ c_expression.spill = False
+ c_expression.precedence=0
+ return c_expression
+ 
+c_precise_type = {"b1":"uint8_t","b2":"uint16_t","b4":"uint32_t","b8":"uint64_t","s1":"uint8_t","s2":"uint16_t","s4":"uint32_t","s8":"uint64_t","f1":"float","f2":"float","f4":"float","f8":"double","*":"void"}
+c_default_type = {"b1":"uint_least8_t","b2":"uint_least16_t","b4":"uint_least32_t","b8":"uint_least64_t","s1":"uint_least8_t","s2":"uint_least16_t","s4":"uint_least32_t","s8":"uint_least64_t","f1":"float","f2":"float","f4":"float","f8":"double","*":"void"}
+c_operator_precedence={"(":1,"[":1,".":1,"~>":1,"~.":1,"~^":1,"~v":1,"+1":2,"-1":2,"~":2,"c":2,"%":3,"/":3,"*":3,"+":4,"-":4,"<<":5,">>":5,">":6,"<":6,">=":6,"<=":6,"=":7,"!=":7,"&":8,"^":9,"|":10}
+c_translate_operator={"~>":"round","~.":"trunc","~^":"ceil","~v":"floor","+1":"+","-1":"-","~":"~","%":"%","/":"/","*":"*","+":"+","-":"-",">>":">>","<<":"<<",">":">","<":"<",">=":">=","<=":"<=","=":"==","!=":"!=","&":"&","^":"^","|":"|"}
+c_translate_builtin={"delete":"free"}
+c_translate_control_flow={"loop":"while(1){","if":"if(","elif":"}else if(","else":"}else{","break":"break;","continue":"continue;"}
+c_spilling_operators={"+1","-1","*","+","-","<<"}
+c_spillover_operators={"(","[","c","%","/",">>",">","<",">=","<=","=","!="}
+  
+def c_generate_returntype(type,name,context):
+ if len(type.returns)==0:
+  return "void",[]
+ elif len(type.returns)==1:
+  return c_translate_typename(type,"",context),[]
+ else:
+  string=""
+  for parameter in type.returns:
+   string+=type_to_string(parameter.type)
+  if string not in context.returntypes:
+   first_try =True
+   while True:
+    if name and first_try:
+     identifier = name+"_t"
+    elif name:
+     identifier = name+"_t"+generate_identifier()
+    else:
+     identifier = "return_"+generate_identifier()
+    if identifier not in programm.objects and identifier not in programm.functions and identifier not in context.variables:
+     break
+    first_try=False
+   declaration_stack = []
+   identifier = programm.global_prefix+identifier
+   if not context.options.typedef:
+    identifier = "struct "+identifier    
+   return_type = identifier
+   declaration = identifier+" {"
+   for index,variable in enumerate(type.returns):
+    declaration+=" "
+    variable_name = variable.name
+    if not variable_name:
+     variable_name="r"+str(index)
+    typename,declarations = c_translate_typename(variable.type,variable_name,context)
+    if declarations:
+     declarations.extend(declaration_stack)
+     declaration_stack=declarations
+    declaration+=typename+";"
+   declaration+="};"
+   if context.options.typedef:
+    declaration_stack.append("typedef struct "+return_type+" "+return_type+";")
+   declaration_stack.append(declaration)
+   context.returntypes[string] = (return_type,declaration)
+   return return_type,declaration_stack
+  else:
+   return_type,return_type_declaration = context.returntypes[string]
+   return return_type,[]
+ 
+def c_get_returntype(type,name,context):
+ returntype,declarations = c_generate_returntype(type,name,context)
+ assert not declarations
+ return returntype
+  
+def c_translate_typename(type,name,context,not_pointer=False):
+ output=""
+ declarations=[]
+ if type.kind !="fun":
+  if type.kind in default_types:
+   output+=context.c_type[type.kind]+" "
+  else:
+   if not context.options.typedef:
+    output+="struct "
+   output+=programm.global_prefix+type.kind+" "
+  if not type.pointer and type.kind in numeric_types or not_pointer:
+   output+=name
+  else:
+   if not type.nested:
+    output+="*"+name
+   else:
+    output+=name+"["+str(type.length)+"]"
+ else:
+  if not type.void:
+   output,declarations = c_generate_returntype(type,name,context)
+   output+=" "
+   if not type.nested and not not_pointer:
+    output+="(*"+name+")("
+   else:
+    output+=name+"("
+   for variable in type.parameters:
+    variable_string,declarations2 = c_translate_typename(variable.type,variable.name,context)
+    declarations2.extend(declarations)
+    declarations=declarations2
+    output+=variable_string+","
+   if output[-1]==",":
+    output=output[:-1]
+   else:
+    output+="void"
+   output+=")"
+   if type.nested:
+    output+="["+str(type.length)+"]"
+  else:
+   output+="void *"+name
+ if output[-1]==" ":
+  output = output[:-1]
+ return output,declarations
+  
+def c_get_typename(type,name,context,not_pointer=False):
+ typename,declarations = c_translate_typename(type,name,context,not_pointer)
+ assert not declarations
+ return typename
+  
+def c_translate_expression(expression,context):
+ translated = []
+ operators = expression.components
+ for operator in operators:
+  c_expression = c_create_expression()
+  output=""
+  if operator.kind =="variable":
+   c_expression.translation= operator.name
+   if operator.name in context.spilled_variables:
+    c_expression.spill=True
+  elif operator.kind =="function":
+   if operator.name not in builtin_functions:
+    c_expression.translation= programm.global_prefix+operator.name
+   else:
+    c_expression.translation= c_translate_builtin[operator.name]
+  elif operator.kind=="constant":
+   if operator.type.kind in floating_point_types:
+    p(operator)
+    output=str(operator.value)
+    if operator.type.size!=8:
+     output+="f"
+   else:
+    if operator.value<0:
+     twos_complement = (0xffffffffffffffff >> 64-bit_size[operator.type.size]) + (operater.value+1)
+     output=str(twos_complement)
+    else:
+     output=str(operator.value)
+    output+="u"
+    if operator.type.size!=4:
+     output = "("+context.c_type[operator.type.kind]+")"+output
+     c_expression.precedence=2
+   c_expression.translation=output
+  elif operator.kind=="object":
+   pass
+  elif operator.kind in c_translate_operator and not operator.type.kind not in default_types:
+   inputs = [translated[operator.inputs[0]]]
+   if operator.kind in binary_operators:
+    inputs.append(translated[operator.inputs[1]])
+   input_translations =[]
+   for i,input in enumerate(inputs):
+    translation = input.translation
+    if operator.kind in {">","<",">=","<="} and operator.type.kind in signed_integer_types:
+     if input.precedence > c_operator_precedence["^"]:
+      translation="("+translation+")"
+     translation += "^0x"+format(sign_mask[operator.type.size],"x")
+     input.precedence = c_operator_precedence["^"]
+    if operator.kind in {">>","<<"} and i==1:
+     if input.precedence > c_operator_precedence["&"]:
+      translation="("+translation+")"
+     translation += "&0x"+format(bitshift_mask[operator.type.size],"x")
+     input.precedence = c_operator_precedence["&"]
+    elif not context.options.precise_types and operator.kind in c_spillover_operators and operater.type.kind in integer_types:
+     if input.spill:
+      if input.precedence > c_operator_precedence["&"]:
+       translation="("+translation+")"
+      translation += "&0x"+format(type_mask[operator.type.size],"x")
+      input.precedence = c_operator_precedence["&"]
+    if input.precedence > c_operator_precedence[operator.kind]:
+     translation="("+translation+")"
+    input_translations.append(translation)
+   if operator.kind in unary_operators:
+    if operator.kind in {"~>","~.","~^","~v"} and operator.type.size<8:
+     c_expression.translation = c_translate_operator[operator.kind]+"f"+input_translation[0]
+    elif operator.kind =="-1" and operator.type.kind in signed_integer_types:
+     c_expression.translation="~"+translation+"+1u"
+    else:
+     c_expression.translation = c_translate_operator[operator.kind]+input_translation[0]
+   elif operator.kind in binary_operators:
+    c_expression.translation = input_translations[0]+c_translate_operator[operator.kind]+input_translations[1]
+   if operator.kind in c_spilling_operators and operator.type.kind not in floating_point_types:
+    c_expression.spill=True
+   if operator.kind=="-1" and operator.type.kind in signed_integer_types:
+    c_expression.precedence = 4
+   else:
+    c_expression.precedence = c_operator_precedence[operator.kind]
+  elif operator.kind == "(":
+   input_function = translated[operator.inputs[0]]
+   translation = input_function.translation+"("
+   for i in operator.inputs[1:]:
+    parameter = translated[operator.inputs[i]]
+    parameter_translation = parameter.translation
+    if not context.options.precise_types and parameter.spill:
+     if parameter.precedence > c_operator_precedence["&"]:
+      parameter_translation="("+parameter_translation+")"
+     parameter_translation += "&0x"+format(type_mask[expression.components[i].type.size],"x")
+    translation+=parameter_translation+","
+   if translation[-1]==",":
+    translation=translation[:-1]
+   translation+=")"
+   c_expression.translation=translation
+   c_expression.precedence=1
+  elif operator.kind == "[":
+   array = translated[operator.inputs[0]]
+   index = translated[operator.inputs[1]]
+   c_expression.translation = array.translation+"["+index.translation+"]"
+   c_expression.precedence=1
+  elif operator.kind == ".":
+   object = translated[operator.inputs[0]]
+   input = expression.components[operator.inputs[0]]
+   if not input.type.nested:
+    c_expression.translation = object.translation+"->"+operator.inputs[1]
+   else:
+    c_expression.translation = object.translation+"."+operator.inputs[1]
+   c_expression.precedence=1
+  elif operator.kind == "c":
+   pass
+  elif operator.kind == "allocation":
+   translation = "malloc(sizeof("
+   type = copy.deepcopy(operator.type)
+   if type.kind in numeric_types:
+    type.pointer=False
+   c_type = c_get_typename(type,"",context)
+   if type.kind not in default_types:
+    assert c_type[-1]=="*"
+    c_type=c_type[:-1]
+   translation+=c_type+")"
+   if len(operator.inputs)>1:
+    amount = translated[operator.inputs[1]]
+    amount_translation = amount.translation
+    if amount.precedence > c_operator_precedence["*"]:
+     amount_translation="("+amount_translation+")"
+    translation+="*"+amount_translation+")"
+   else:
+    translation+=")"
+   c_expression.translation=translation
+   c_expression.precedence=1
+  elif operator.type.kind not in default_types:
+   assert operator.kind in {"=","!="}
+   objects = [translated[operator.inputs[0]],translated[operator.inputs[1]]]
+   translations = []
+   for i,object in enumerate(objects):
+    translation = object.translation
+    input = expression.components[operator.inputs[i]]
+    if not input.type.pointer:
+     translation = "&"+translation
+    translations.append(translation)
+   c_expression.translation = translations[0]+c_translate_operator[operator.kind]+translations[1]
+   c_expression.precedence = 2
+  else:
+   assert False
+  translated.append(c_expression)
+ return translated[-1].translation
+ 
+def c_translate_code(code,function,context):
+ body = []
+ for instruction in code:
+  output=""
+  if instruction.kind == "assignment" and not instruction.special:
+   if not instruction.new_variable:
+    output = c_translate_expression(instruction.destination,context)
+   else:
+    variable = instruction.destination.components[-1]
+    output = c_get_typename(variable.type,variable.name,context)
+   output+="="
+   output+= c_translate_expression(instruction.expression,context)
+   body.append(output+";")
+  elif instruction.kind == "assignment" and instruction.special:
+   if not instruction.destination:
+    output = c_translate_expression(instruction.expression,context)
+    body.append(output+";")
+   elif instruction.destination=="return" and len(instruction.expression)<2:
+    output = "return"
+    if instruction.expression:
+     output+=" "+c_translate_expression(instruction.expression[0],context)
+    body.append(output+";")
+   else:
+    if instruction.destination=="return":
+     source_expression = instruction.expression
+     function_type = function.type
+    else:
+     source_expression = instruction.destination
+     function_type = instruction.expression.components[-1].type
+    return_variable_name = generate_variable_name(function)
+    function.variables[return_variable_name]=None
+    output = c_get_returntype(function_type,"",context)
+    output+=" "+return_variable_name
+    if instruction.destination!="return":
+     output+="="+c_translate_expression(instruction.expression,context)
+    body.append(output+";")
+    for i,destination in enumerate(source_expression):
+     if destination:
+      if not instruction.new_variable or not instruction.new_variable[i]:
+       output = c_translate_expression(destination,context)
+      else:
+       variable = destination.components[-1]
+       output = c_get_typename(variable.type,variable.name,context)
+      if instruction.destination=="return":
+       output = return_variable_name+".r"+str(i)+"="+output
+      else:
+       output+="="+return_variable_name+".r"+str(i)
+      body.append(output+";")
+    if instruction.destination=="return":
+     body.append("return "+return_variable_name+";")
+  elif instruction.kind in control_flow_identifiers:
+   output = c_translate_control_flow[instruction.kind]
+   if instruction.kind in {"if","elif"}:
+    output+=c_translate_expression(instruction.condition,context)+"){"
+   body.append(output)
+   if instruction.body:
+    body2 = c_translate_code(instruction.body,function,context)
+    for i in range(len(body2)):
+     body2[i]=" "+body2[i]
+    body.extend(body2)
+    if not instruction.next:
+     body.append("}")
+  else:
+   assert False
+ return body
+ 
+def c_translate_function(function,context):
+ body = []
+ body.append(c_get_typename(function.type,function.name,context,not_pointer=True)+" {")
+ body2 = c_translate_code(function.body,function,context)
+ for i in range(len(body2)):
+  body2[i]=" "+body2[i]
+ body.extend(body2)
+ body.append("}")
+ return body
+  
+def c_translate_object(object,context):
+ output = []
+ sorted_fields = []
+ if not context.options.preserve_field_order:
+  current_size = 8
+  while current_size>0:
+   if current_size == 4:
+    for variable in object.variables.values():
+     if (not variable.type.nested or variable.type.kind in{"*","fun"}) and (variable.type.pointer or variable.type.kind not in numeric_types):
+      sorted_fields.append(variable)
+   for variable in object.variables.values():
+    if variable.type.size == current_size and variable.type.kind in numeric_types and (not variable.type.pointer or variable.type.nested):
+     sorted_fields.append(variable)
+    elif variable.type.kind not in default_types and variable.type.nested and context.object_alignments[variable.type.kind]==current_size:
+     sorted_fields.append(variable)
+   current_size//=2
+  assert len(sorted_fields)==len(object.variables)
+ else:
+  sorted_fields = object.variables
+ object_typename,_ = c_translate_typename(object.type,"",context,not_pointer=True)
+ output.append(object_typename+" {")
+ declarations = []
+ for field in sorted_fields:
+  field_name,declarations2 = c_translate_typename(field.type,field.name,context)
+  if declarations2:
+   declarations2.extend(declarations)
+   declarations=declarations2
+  output.append(" "+field_name+";")
+ output.append("};")
+ declarations.extend(output)
+ output = declarations
+ if context.options.typedef:
+  output.append("typedef struct "+object_c_name+" "+object_c_name+";")
+ return output
+  
+def c_compute_object_alignment(object,context):
+ alignment=1
+ for variable in object.variables.values():
+  if (variable.type.kind not in numeric_types or variable.type.pointer) and (not variable.type.nested or variable.type.kind in {"fun","*"}):
+   alignment=max(alignment,4)
+  elif variable.type.kind in numeric_types and (not variable.type.pointer or variable.type.nested):
+   alignment=max(alignment,variable.type.size)
+  elif variable.type.nested and variable.type.kind not in numeric_types:
+   alignment=max(alignment,context.object_alignments[variable.type.kind])
+ context.object_alignments[object.name]=alignment
+  
+#remember to disable strict aliasing
+def c_translate_programm(programm,c_options):
+ output = []
+ output.append("#include <stdlib.h>")
+ output.append("#include <stdint.h>")
+ output.append("#include <math.h>")
+ context = c_create_context()
+ context.options = c_options
+ if context.options.precise_types:
+  context.c_type=c_precise_type
+ for function in programm.functions.values():
+  for variable in function.variables.values():
+   context.variables.add(variable.name)
+ nested_objects=set()
+ remaining_objects = len(programm.objects)
+ sorted_objects = list(programm.objects.values())
+ while remaining_objects:
+  for object in sorted_objects[:remaining_objects]:
+   for field in object.variables.values():
+    if field.type.kind not in default_types and field.type.kind!="fun":
+     if field.type.nested:
+      nested_objects.add(field.type.kind)
+  for i in range(remaining_objects):
+   if sorted_objects[i].name in nested_objects:
+    nested_object = sorted_objects[i]
+    del sorted_objects[i]
+    sorted_objects.insert(0,nested_object)
+  remaining_objects = len(nested_objects)
+  nested_objects.clear()
+ for object in sorted_objects:
+  c_compute_object_alignment(object,context)
+ for function in programm.functions.values():
+  function_declaration,declarations = c_translate_typename(function.type,function.name,context,not_pointer=True)
+  output.extend(declarations)
+  output.append(function_declaration+";")
+ for object in sorted_objects:
+  output.extend(c_translate_object(object,context))
+ for function in programm.functions.values():
+  output.extend(c_translate_function(function,context))
+ return output
+  
+  
 source = sample_programm
 source_lines = source.split("\n")
 programm = parse(source_lines)
-p(programm)
-
+options = c_create_options()
+translation = c_translate_programm(programm,options)
+for line in translation:
+ print(line)
