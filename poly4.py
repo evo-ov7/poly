@@ -182,6 +182,7 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 #more operators ?
 #vectors
 #atomics
+#c optimize spillage
 
  
  
@@ -1845,6 +1846,8 @@ def c_create_expression():
  
 c_precise_type = {"b1":"uint8_t","b2":"uint16_t","b4":"uint32_t","b8":"uint64_t","s1":"uint8_t","s2":"uint16_t","s4":"uint32_t","s8":"uint64_t","f1":"float","f2":"float","f4":"float","f8":"double","*":"void"}
 c_default_type = {"b1":"uint_least8_t","b2":"uint_least16_t","b4":"uint_least32_t","b8":"uint_least64_t","s1":"uint_least8_t","s2":"uint_least16_t","s4":"uint_least32_t","s8":"uint_least64_t","f1":"float","f2":"float","f4":"float","f8":"double","*":"void"}
+c_max_float =["","","","","","","","",""]
+c_max_double =["","","","","","","","",""]
 c_operator_precedence={"(":1,"[":1,".":1,"~>":1,"~.":1,"~^":1,"~v":1,"+1":2,"-1":2,"~":2,"c":2,"%":3,"/":3,"*":3,"+":4,"-":4,"<<":5,">>":5,">":6,"<":6,">=":6,"<=":6,"=":7,"!=":7,"&":8,"^":9,"|":10}
 c_translate_operator={"~>":"round","~.":"trunc","~^":"ceil","~v":"floor","+1":"+","-1":"-","~":"~","%":"%","/":"/","*":"*","+":"+","-":"-",">>":">>","<<":"<<",">":">","<":"<",">=":">=","<=":"<=","=":"==","!=":"!=","&":"&","^":"^","|":"|"}
 c_translate_builtin={"delete":"free"}
@@ -1981,6 +1984,41 @@ def c_transform_expression(destination,expression,context):
    code = [" if "+variable.name+"&0x"+format(sign_mask[operation.type.size],"x")+"!=0","  "+variable.name+"="+variable.name+"~+1"]
    preamble.extend(parse_code_body(code,context.function))
    i=0
+  elif operation.kind=="c" and not operation.type.pointer and (expression.components[operation.inputs[0]].type.kind in floating_point_types and operation.type.kind in integer_types or expression.components[operation.inputs[0]].type.kind in signed_integer_types and operation.type.kind in floating_point_types) and "transformed" not in operation.metadata:
+   cast_expression,hole_position,expression = extract_expression(expression,i)
+   cast_variable,cast_assignment,_,_ = cache_in_variable(cast_expression,len(cast_expression.components)-2,context.function,invalid_names=c_reserved_identifiers)
+   preamble.append(cast_assignment)
+   destination_variable = create_variable()
+   destination_variable.type = copy.deepcopy(operation.type)
+   destination_variable.name = generate_variable_name(context.function,invalid_names=c_reserved_identifiers)
+   variable_expression = create_linear_expression()
+   variable_expression.components.append(destination_variable)
+   variable_expression.positions.append((0,0,0))
+   expression = replace_expression(expression,hole_position,variable_expression)
+   code = []
+   if operation.type.kind in integer_types:
+    if cast_variable.type.size>4:
+     max = c_max_double[operation.type.size]
+    else:
+     max = c_max_float[operation.type.size]
+    if operation.type.kind in signed_integer_types:
+     code.append(" "+cast_variable.name+"="+cast_variable.name+"+"+str(s_max[operation.type.size]+1))
+    code.append(" if "+cast_variable.name+">"+max)
+    code.append("  "+cast_variable.name+"="+max)
+    code.append(" if "+cast_variable.name+"<=0")
+    code.append("  "+cast_variable.name+"=0")
+    if operation.type.kind not in signed_integer_types:
+     code.append(" "+destination_variable+"="+cast_variable.name+"("+operation.type.kind+")")
+    if operation.type.kind in signed_integer_types:
+     code.append(" "+destination_variable+"="+cast_variable.name+"("+operation.type.kind+")-"+str(s_max[operation.type.size]+1))
+   elif operation.type.kind in floating_point_types:
+    code.append(" "+cast_variable.name+"="+cast_variable.name+"+"+str(s_max[operation.type.size]+1))
+    code.append(" "+destination_variable+"="+cast_variable.name+"("+operation.type.kind+")-"+str(s_max[operation.type.size]+1))
+   code2=parse_code_body(code,context.function)
+   context.operation = "c"
+   code3 = transform_code(code2,c_mark,context)
+   preamble.extend(code3)
+   i=0
   elif operation.kind ==">>" and operation.type.kind in signed_integer_types and "transformed" not in operation.metadata:
    shift_expression,hole_position,expression = extract_expression(expression,i)
    operand1_variable,operand1_instruction,hole_position,shift_expression = cache_in_variable(shift_expression,shift_expression.components[-1].inputs[0],context.function,invalid_names=c_reserved_identifiers)
@@ -1997,19 +2035,35 @@ def c_transform_expression(destination,expression,context):
    code3 = transform_code(code2,c_mark,context)
    preamble.extend(code3)
    i=0
-  elif operation.kind in {"/","%"} and operation.type.kind in signed_integer_types and "transformed" not in operation.metadata:
-   shift_expression,hole_position,expression = extract_expression(expression,i)
-   operand1_variable,operand1_instruction,hole_position,shift_expression = cache_in_variable(shift_expression,shift_expression.components[-1].inputs[0],context.function,invalid_names=c_reserved_identifiers)
+  elif operation.kind in {"/","%"}  and "transformed" not in operation.metadata:
+   divide_expression,hole_position,expression = extract_expression(expression,i)
+   operand1_variable,operand1_instruction,hole_position,divide_expression = cache_in_variable(divide_expression,divide_expression.components[-1].inputs[0],context.function,invalid_names=c_reserved_identifiers)
    preamble.append(operand1_instruction)
+   operand2_variable,operand2_instruction,hole_position,divide_expression = cache_in_variable(divide_expression,divide_expression.components[-1].inputs[1],context.function,invalid_names=c_reserved_identifiers)
+   preamble.append(operand2_instruction)
    variable_expression = create_linear_expression()
-   variable_expression.components.append(operand1_variable)
+   variable_expression.components.append(operand2_variable)
    variable_expression.positions.append((0,0,0))
    expression = replace_expression(expression,hole_position,variable_expression)
-   operand2_variable,operand2_instruction,hole_position,shift_expression = cache_in_variable(shift_expression,shift_expression.components[-1].inputs[1],context.function,invalid_names=c_reserved_identifiers)
-   preamble.append(operand2_instruction)
-   code = [" if "+operand1_variable.name+"&0x"+format(sign_mask[operation.type.size],"x")+"=0","  "+operand1_variable.name+"="+operand1_variable.name+">>"+operand2_variable.name," else","  "+operand1_variable.name+"="+operand1_variable.name+">>"+operand2_variable.name+"  |  0x"+format(type_mask[operation.type.size],"x")+" << "+str(bit_size[operation.type.size])+"-"+operand2_variable.name]
+   code =[]
+   if operation.type.kind in signed_integer_types:
+    sign_variable_name = generate_variable_name(context.function,invalid_names=c_reserved_identifiers)
+    if operation.kind=="%":
+     code.append(" "+sign_variable_name+"="+operand1_variable.name+"&0x"+format(sign_mask[operation.type.size],"x"))
+    else:
+     code.append(" "+sign_variable_name+"="+operand1_variable.name+"^"+operand2_variable.name+"&0x"+format(sign_mask[operation.type.size],"x"))
+   code.append(" if "+operand2_variable.name+"!=0")
+   if operation.type.kind in signed_integer_types:
+    code.append("  "+operand1_variable.name+"="+operand1_variable.name+"+")
+    code.append("  "+operand2_variable.name+"="+operand2_variable.name+"+")
+    code.append("  "+operand2_variable.name+"="+operand1_variable.name+operation.kind+operand2_variable.name+"|"+sign_variable_name)
+   else:
+    code.append("  "+operand2_variable.name+"="+operand1_variable.name+operation.kind+operand2_variable.name)
+   if operation.kind == "%":
+    code.append(" else")
+    code.append("  "+operand2_variable.name+"="+operand1_variable.name)
    code2=parse_code_body(code,context.function)
-   context.operation = ">>"
+   context.operation = operation.kind
    code3 = transform_code(code2,c_mark,context)
    preamble.extend(code3)
    i=0
@@ -2084,11 +2138,19 @@ def c_translate_expression(expression,context):
     else:
      c_expression.translation = c_translate_operator[operator.kind]+input_translations[0]
    elif operator.kind in binary_operators:
-    c_expression.translation = input_translations[0]+c_translate_operator[operator.kind]+input_translations[1]
+    if operator.kind=="%" and operator.type.kind in floating_point_types:
+     if operator.type.size!=8:
+      c_expression.translation = "fmodf("+input_translations[0]+","+input_translations[1]+")"
+     else:
+      c_expression.translation = "fmod("+input_translations[0]+","+input_translations[1]+")"
+    else:
+     c_expression.translation = input_translations[0]+c_translate_operator[operator.kind]+input_translations[1]
    if operator.kind in c_spilling_operators and operator.type.kind not in floating_point_types:
     c_expression.spill=True
    if operator.kind=="-1" and operator.type.kind in signed_integer_types:
     c_expression.precedence = 4
+   elif operator.kind=="%" and operator.type.kind in floating_point_types:
+    c_expression.precedence=1
    else:
     c_expression.precedence = c_operator_precedence[operator.kind]
   elif operator.kind == "(":
@@ -2119,7 +2181,13 @@ def c_translate_expression(expression,context):
    c_expression.precedence=1
   elif operator.kind == "c":
    input = expression.components[operator.inputs[0]]
-   target_type = operator.inputs[1]
+   input_translation = translated[operator.inputs[0]]
+   translation=input_translation.translation
+   if input_translation.precedence > c_operator_precedence["c"]:
+    translation = "("+translation+")"
+   translation= "("+c_get_typename(operation.type)+")"+translation
+   c_expression.translation = translation
+   c_expression.precedence = c_operator_precedence["c"]
   elif operator.kind == "allocation":
    translation = "malloc(sizeof("
    type = copy.deepcopy(operator.type)
@@ -2162,11 +2230,11 @@ def c_translate_code(code,function,context):
  for instruction in code:
   output=""
   if instruction.kind == "assignment" and not instruction.special:
-   if not instruction.new_variable:
-    output = c_translate_expression(instruction.destination,context)
-   else:
-    variable = instruction.destination.components[-1]
-    output = c_get_typename(variable.type,variable.name,context)
+   #if not instruction.new_variable:
+   output = c_translate_expression(instruction.destination,context)
+   #else:
+    #variable = instruction.destination.components[-1]
+    #output = c_get_typename(variable.type,variable.name,context)
    output+="="
    output+= c_translate_expression(instruction.expression,context)
    body.append(output+";")
@@ -2195,11 +2263,11 @@ def c_translate_code(code,function,context):
     body.append(output+";")
     for i,destination in enumerate(source_expression):
      if destination:
-      if not instruction.new_variable or not instruction.new_variable[i]:
-       output = c_translate_expression(destination,context)
-      else:
-       variable = destination.components[-1]
-       output = c_get_typename(variable.type,variable.name,context)
+      #if not instruction.new_variable or not instruction.new_variable[i]:
+      output = c_translate_expression(destination,context)
+      #else:
+       #variable = destination.components[-1]
+       #output = c_get_typename(variable.type,variable.name,context)
       if instruction.destination=="return":
        output = return_variable_name+".r"+str(i)+"="+output
       else:
@@ -2232,7 +2300,11 @@ def c_translate_function(function,context):
    new_name = generate_variable_name(function,invalid_names=c_reserved_identifiers,name_prefix=variable)
    rename_variable(variable,new_name,function)
  function.body = transform_code(function.body,c_transform_expression,context)
- body2 = c_translate_code(function.body,function,context)
+ body2 = []
+ for variable in function.variables.values():
+  if variable.name not in function.parameter_names:
+   body2.append(c_get_typename(variable.type,variable.name,context)+";")
+ body2.extend(c_translate_code(function.body,function,context))
  for i in range(len(body2)):
   body2[i]=" "+body2[i]
  body.extend(body2)
@@ -2290,11 +2362,19 @@ def c_translate_programm(programm,c_options):
  output = []
  output.append("#include <stdlib.h>")
  output.append("#include <stdint.h>")
- output.append("#include <math.h>")
+ output.append("#include <math.h>") 
  context = c_create_context()
  context.options = c_options
  if context.options.precise_types:
   context.c_type=c_precise_type
+ for type in unsigned_integer_types:
+  type_size = int(type[1])
+  c_max_float[type_size] = programm.global_prefix+"float_"+type+"_max"
+  c_max_double[type_size] = programm.global_prefix+"double_"+type+"_max"
+  output.append("float "+c_max_float[type_size]+";")
+  output.append("double "+c_max_double[type_size]+";")
+  output.append(c_max_float[type_size]+"=nextafterf("+str(b_max[type_size])+",0);")
+  output.append(c_max_double[type_size]+"=nextafterf("+str(b_max[type_size])+",0);")
  for function in programm.functions.values():
   for variable in function.variables.values():
    context.variables.add(variable.name)
