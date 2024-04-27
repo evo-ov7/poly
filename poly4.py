@@ -36,10 +36,15 @@ function main
  byte = 0b
  short = 0s
  int = 0i
+ loop
+  cool = 4s
+  if int>2
+ break
+  elif func!=add
+   cool}+2
  long = 0l
- signed = 0i+
- test = signed>>3
  float = 0f
+ signed = 1i-
  double = 0d
  half = 0h
  tiny = 0q
@@ -112,6 +117,7 @@ for type in numeric_types:
 b_max = [None,2**8-1,2**16-1,None,2**32-1,None,None,None,2**64-1]
 s_max = [None,2**7-1,2**15-1,None,2**31-1,None,None,None,2**63-1]
 s_min = [None,-2**7,-2**15,None,-2**31,None,None,None,-2**63]
+size_suffix = [None,"b","s",None,"i",None,None,None,"l"]
 bit_size = [None,8,16,None,32,None,None,None,64]
 type_mask = [None,0xff,0xffff,None,0xffffffff,None,None,None,0xffffffffffffffff]
 sign_mask = [None,0x80,0x8000,None,0x80000000,None,None,None,0x8000000000000000]
@@ -164,10 +170,10 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 #compound operator
 #basic control flow
 #type propagation
-#done ^ todo v
 #c signed /%, cast to int
 #c code block namespaces
 #avoid reserved identifiers
+#done ^ todo v
 #translate optional operators
 #pointer arithmetic
 #constant pointer types
@@ -685,6 +691,9 @@ def propagate_types(expression,context):
         new_type.size=1
         new_type.string=new_type.kind
         expression.components[input].type = new_type
+   
+    
+   
  for index,operator in enumerate(expression.components):
   if operator.type and operator.type.kind in unspecific_types:
    error("couldn't statically type "+operator.type.kind,expression.positions[index],inspect.getframeinfo(inspect.currentframe()).lineno)
@@ -812,7 +821,51 @@ def parse_function_signature_components(context):
   del positions[-1]
  return parameters,positions
  
-def parse_function_signature(context):
+def parse_function_signature_parameters(parameters,positions,context):
+ line = context.line
+ parameter_names={}
+ returns=[]
+ for i in range(len(parameters)):
+  parameter = parameters[i]
+  offset = positions[i]
+  constant = None
+  parameter_variable=create_variable()
+  offset2=0
+  if " " in parameter and not(len(parameter)>=4 and parameter[:4] in{"fun(","fun*"}):
+   parameter_name = parse_identifier_string(parameter)
+   if not parameter_name:
+    error("invalid character in return name",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+   if parameter_name in parameter_names:
+    error("duplicate return "+parameter_name,(context.line_position,offset,offset+len(parameter_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
+   parameter_names[parameter_name]=parameter_variable
+   parameter_variable.name = parameter_name
+   offset2+=len(parameter_name)
+   if parameter[offset2]=="=":
+    offset2+=1
+    context.offset = offset+offset2
+    constant,constant_string = parse_constant(context)
+    offset2+=len(constant_string)
+    if offset2>=len(parameter):
+     error("missing parameter type",(context.line_position,offset+offset2,offset+offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+   if parameter[offset2]!=" ":
+    error("invalid character in return name",(context.line_position,offset+offset2,offset+offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+   offset2+=1
+  context.offset=offset+offset2
+  parameter_type = parse_type(context)
+  parameter_variable.type = parameter_type
+  if offset2+len(parameter_type.string)!=len(parameter):
+   error("trailing characters in return declaration",(context.line_position,offset+offset2+len(parameter_type.string),offset+len(parameter)),inspect.getframeinfo(inspect.currentframe()).lineno)
+  if constant:
+   intersection = type_intersection(constant.type,parameter_type)
+   if not intersection:
+    error("constant type "+constant.type.kind+" incompatible with parameter type "+parameter_type.kind,(context.line_position,offset,offset+len(parameter)),inspect.getframeinfo(inspect.currentframe()).lineno)
+   parameter_variable.value = constant.value
+   if intersection.kind in integer_types:
+    parameter_variable.value = int(parameter_variable.value) 
+  returns.append(parameter_variable)
+ return returns
+ 
+def parse_function_signature(context,names_required=True):
  line = context.line
  offset = context.offset
  start = offset
@@ -821,42 +874,12 @@ def parse_function_signature(context):
  inputs = []
  returns =[]
  parameters,positions = parse_function_signature_components(context)
- for i in range(len(parameters)):
-  parameter = parameters[i]
-  offset = positions[i]
-  parameter_name = parse_identifier_string(parameter)
-  parameter_variable = create_variable()
-  if not parameter_name:
-   error("missing parameter",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-  if parameter_name in input_names:
-   error("duplicate parameter "+parameter_name,(context.line_position,offset,offset+len(parameter_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
-  input_names[parameter_name] = parameter_variable
-  offset2 = len(parameter_name)
-  if offset2 >= len(parameter):
-   error("missing type",(context.line_position,offset+offset2,offset+offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-  constant=None
-  if parameter[offset2]=="=":
-   offset2+=1
-   context.offset = offset+offset2
-   constant,constant_string = parse_constant(context)
-   offset2+=len(constant_string)
-   if offset2>=len(parameter):
-    error("missing parameter type",(context.line_position,offset+offset2,offset+offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-  if parameter[offset2]!=" " or offset2+1>=len(parameter):
-   error("expected parameter type",(context.line_position,offset+offset2,offset+offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-  offset2+=1
-  context.offset=offset+offset2
-  parameter_type = parse_type(context)
-  parameter_variable.name = parameter_name
-  parameter_variable.type = parameter_type
-  if constant:
-   intersection = type_intersection(constant.type,parameter_type)
-   if not intersection:
-    error("constant type "+constant.type.kind+" incompatible with parameter type "+parameter_type.kind,(context.line_position,offset,offset+len(parameter)),inspect.getframeinfo(inspect.currentframe()).lineno)
-   parameter_variable.value = constant.value
-  if offset2+len(parameter_type.string)!=len(parameter):
-   error("trailing characters in parameter declaration",(context.line_position,offset+offset2+len(parameter_type.string),offset+len(parameter)),inspect.getframeinfo(inspect.currentframe()).lineno)
-  inputs.append(parameter_variable)
+ inputs = parse_function_signature_parameters(parameters,positions,context)
+ for i,input in enumerate(inputs):
+  if not input.name and names_required:
+   error("missing parameter",(context.line_position,positions[i],positions[i]+len(parameters[i])),inspect.getframeinfo(inspect.currentframe()).lineno)
+  if input.name:
+   input_names[input.name]=input
  if positions:
   offset = positions[-1]+len(parameters[-1])
  else:
@@ -870,32 +893,16 @@ def parse_function_signature(context):
    error("expected returns",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
   context.offset=offset
   parameters,positions = parse_function_signature_components(context)
-  if not parameters:
-   error("expected returns",(context.line_position,offset+1,offset+2),inspect.getframeinfo(inspect.currentframe()).lineno)
-  for i in range(len(parameters)):
-   parameter = parameters[i]
-   offset = positions[i]
-   parameter_variable=create_variable()
-   offset2=0
-   if " " in parameter and not(len(parameter)>=4 and parameter[:4] in{"fun(","fun*"}):
-    parameter_name = parse_identifier_string(parameter)
-    if not parameter_name:
-     error("invalid character in return name",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-    if parameter_name in return_names:
-     error("duplicate return "+parameter_name,(context.line_position,offset,offset+len(parameter_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
-    return_names[parameter_name]=parameter_variable
-    parameter_variable.name = parameter_name
-    offset2+=len(parameter_name)
-    if parameter[offset2]!=" ":
-     error("invalid character in return name",(context.line_position,offset+offset2,offset+offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-    offset2+=1
-   context.offset=offset+offset2
-   parameter_type = parse_type(context)
-   parameter_variable.type = parameter_type
-   if offset2+len(parameter_type.string)!=len(parameter):
-    error("trailing characters in return declaration",(context.line_position,offset+offset2+len(parameter_type.string),offset+len(parameter)),inspect.getframeinfo(inspect.currentframe()).lineno)
-   returns.append(parameter_variable)
-  offset=positions[-1]+len(parameter[-1])+1
+  returns = parse_function_signature_parameters(parameters,positions,context)
+  for i,input in enumerate(returns):
+   if input.value:
+    error("default return value not allowed",(context.line_position,positions[i],positions[i]+len(parameters[i])),inspect.getframeinfo(inspect.currentframe()).lineno)
+   if input.name:
+    return_names[input.name]=input
+  if positions:
+   offset=positions[-1]+len(parameters[-1])+1
+  else:
+   offset+=2
  return inputs,returns,line[start:offset],input_names,return_names
 
 def parse_type(context):
@@ -951,7 +958,8 @@ def parse_type(context):
    if line[offset]=="(":
     type.void=False
     context.offset=offset
-    type.parameters,type.returns,type.string,type.parameter_names,type.return_names = parse_function_signature(context)
+    type.parameters,type.returns,signature_string,type.parameter_names,type.return_names = parse_function_signature(context,names_required=False)
+    type.string = "fun"+signature_string
    else:
     type.void=True
     type.string = type.string[:3]+"*"+type.string[3:]
@@ -1042,17 +1050,17 @@ def parse_unary_operator(operator,context):
     if line[offset+len(target_type.string)]!=")":
      error("trailing characters after type",(context.line_position,offset+len(target_type.string),offset+len(target_type.string)+1),inspect.getframeinfo(inspect.currentframe()).lineno)
     if target_type.kind!="*" and input.type.kind!="*":
-     if target_type.kind in numeric_compatible_types != input.type.kind in numeric_compatible_types:
-      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+     if (target_type.kind in numeric_compatible_types) != (input.type.kind in numeric_compatible_types):
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)),inspect.getframeinfo(inspect.currentframe()).lineno)
      if target_type.pointer != input.type.pointer:
-      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
-     if target_type.pointer and target_type in numeric_types and input.type.size and target_type.size>input.type.size:
-      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)),inspect.getframeinfo(inspect.currentframe()).lineno)
+     if target_type.pointer and target_type.kind in numeric_types and input.type.size and target_type.size>input.type.size:
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)),inspect.getframeinfo(inspect.currentframe()).lineno)
     else:
      if target_type.kind in numeric_compatible_types and not target_type.pointer:
-      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)),inspect.getframeinfo(inspect.currentframe()).lineno)
      if input.type.kind in numeric_compatible_types and not input.type.pointer:
-      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)+2),inspect.getframeinfo(inspect.currentframe()).lineno)
+      error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)),inspect.getframeinfo(inspect.currentframe()).lineno)
     operation.inputs.append(target_type)
     operation.type = target_type
     return operation,offset+len(target_type.string)+1
@@ -1127,7 +1135,10 @@ def parse_unary_operator(operator,context):
      if len(function.returns)==1:
       operation.type = copy.deepcopy(function.returns[0].type)
      elif len(function.returns)>1:
-      operation.type = copy.deepcopy(function.type)
+      if function.kind == "function":
+       operation.type = copy.deepcopy(function.type)
+      else:
+       operation.type = copy.deepcopy(function)
      operation.outputs = copy.deepcopy(function.returns)
      operation.output_names = function.return_names
     else:
@@ -1254,10 +1265,25 @@ def parse_binary_operator(operator,operand1_index,context):
    result_type = type_intersection(operand1.type,operand2.type)
    if operator in literal_binary_integer_operators:
     result_type = type_intersection(result_type,integer_type)
+   elif operator in {">","<",">=","<="}:
+    operand1.type = copy.deepcopy(result_type)
+    operand2.type = copy.deepcopy(result_type)
+    result_type = create_type()
+    result_type.kind = "b4"
+    result_type.size = 4
    operation.type = result_type
    return operation
  else:
-  operation.type = copy.deepcopy(operand1.type)
+  if operator in {"=","!="}:
+   result_type = type_intersection(operand1.type,operand2.type)
+   operand1.type = copy.deepcopy(result_type)
+   operand2.type = copy.deepcopy(result_type)
+   result_type = create_type()
+   result_type.kind = "b4"
+   result_type.size = 4
+   operation.type= result_type
+  else:
+   operation.type = copy.deepcopy(operand1.type)
   return operation
  
 def apply_delayed_operator(delayed_operator,context):
@@ -1318,16 +1344,20 @@ def parse_expression(context):
    offset+=len(operator)
    space_end2 = skip_space(line,offset)
    space_length2 = space_end2 - offset
-   if space_length!=space_length2 and not abacus or abacus and space_length2>space_length:
+   if space_length!=space_length2 and not abacus or abacus and space_length2 not in {space_length,0}:
     error("invalid spacing after operator",(context.line_position,offset,offset+space_length2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
    if space_length2>0:
     delayed_operators[space_length2-1]=(operator,len(context.expression.components)-1,offset-len(operator))
-    offset = space_end2
-    context.offset = offset
-    offset2 = parse_unary_operator_stack(context)
-    if offset2==offset:
-     error("expected unary operator",(context.line_position,offset2,offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
-    offset=offset2
+   else:
+    delayed_operator=(operator,len(context.expression.components)-1,offset-len(operator))
+   offset = space_end2
+   context.offset = offset
+   offset2 = parse_unary_operator_stack(context)
+   if offset2==offset:
+    error("expected unary operator",(context.line_position,offset2,offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+   if space_length2==0:
+    apply_delayed_operator(delayed_operator,context)
+   offset=offset2
   else:
    error("expected binary operator",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
  for delayed_operator in delayed_operators:
@@ -1359,10 +1389,13 @@ def parse_function_body(function):
    error("unexpected indent",(line_position,nesting_level,indent),inspect.getframeinfo(inspect.currentframe()).lineno)
   if indent<nesting_level:
    if identifier in {"break","continue"}:
-    if control_flow_stack[indent].kind!="loop":
-     error("can only "+identifier+" on loop",(line_position,indent,indent+len(identifier)),inspect.getframeinfo(inspect.currentframe()).lineno)
+    loop_index=None
     for i in range(indent+1,len(control_flow_stack)-1):
-     if control_flow_stack[i].kind == "loop":
+     if control_flow_stack[i] and not loop_index and control_flow_stack[i].kind!="loop":
+      error("can only "+identifier+" on loop",(line_position,indent,indent+len(identifier)),inspect.getframeinfo(inspect.currentframe()).lineno)
+     if control_flow_stack[i] and not loop_index and control_flow_stack[i].kind=="loop":
+      loop_index=i
+     elif control_flow_stack[i] and loop_index and control_flow_stack[i].kind == "loop":
       error("cannot "+identifier+" multiple loops",(line_position,indent,i),inspect.getframeinfo(inspect.currentframe()).lineno)
    else:
     last_control_flow = control_flow_stack[-1]
@@ -1401,10 +1434,20 @@ def parse_function_body(function):
    if flow.kind in {"if","elif"}:
     propagate_types(flow.condition,context)
    if flow.kind not in {"break","continue"}:
-    next_line = body_lines[body_index+1][0]
-    next_indent = len(next_line)-len(next_line.lstrip(" "))
-    if next_indent<len(control_flow_stack):
-     error("invalid indent",(body_lines[body_index+1][1],next_indent,len(control_flow_stack)),inspect.getframeinfo(inspect.currentframe()).lineno)
+    next_indent = indent
+    i=body_index+1
+    if i>=len(body_lines):
+     error("expected indented expression",(line_position,len(line)-1,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
+    while i<len(body_lines):
+     next_line = body_lines[i][0]
+     next_indent = len(next_line)-len(next_line.lstrip(" "))
+     tmp_identifier = parse_identifier_string(next_line[next_indent:])
+     if tmp_identifier in {"break","continue"}:
+      i+=1
+      continue
+     if next_indent<len(control_flow_stack) and i==body_index+1:
+      error("invalid indent",(body_lines[body_index+1][1],next_indent,len(control_flow_stack)),inspect.getframeinfo(inspect.currentframe()).lineno)
+     break
     while next_indent>len(control_flow_stack):
      control_flow_stack.append(None)
     control_flow_stack.append(flow)
@@ -1586,10 +1629,13 @@ def parse_function_body(function):
      substitute = variable.name+"."+destination.components[-1].inputs[1]
     else:
      substitute = line[indent:destination_end]
+     assignment.destination = context.expression
     context.line = line[:offset+1-len(substitute)]+substitute+line[offset+1:]
     context.offset = offset+1-len(substitute)
     assignment.expression = parse_expression(context)
-    context.line = line  
+    context.line = line
+   else:
+    error("expected expression",(line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
    destination_type = assignment.destination.components[-1].type
    source_type = assignment.expression.components[-1].type
    new_type = type_intersection(destination_type,source_type)
@@ -1846,8 +1892,6 @@ def c_create_expression():
  
 c_precise_type = {"b1":"uint8_t","b2":"uint16_t","b4":"uint32_t","b8":"uint64_t","s1":"uint8_t","s2":"uint16_t","s4":"uint32_t","s8":"uint64_t","f1":"float","f2":"float","f4":"float","f8":"double","*":"void"}
 c_default_type = {"b1":"uint_least8_t","b2":"uint_least16_t","b4":"uint_least32_t","b8":"uint_least64_t","s1":"uint_least8_t","s2":"uint_least16_t","s4":"uint_least32_t","s8":"uint_least64_t","f1":"float","f2":"float","f4":"float","f8":"double","*":"void"}
-c_max_float =["","","","","","","","",""]
-c_max_double =["","","","","","","","",""]
 c_operator_precedence={"(":1,"[":1,".":1,"~>":1,"~.":1,"~^":1,"~v":1,"+1":2,"-1":2,"~":2,"c":2,"%":3,"/":3,"*":3,"+":4,"-":4,"<<":5,">>":5,">":6,"<":6,">=":6,"<=":6,"=":7,"!=":7,"&":8,"^":9,"|":10}
 c_translate_operator={"~>":"round","~.":"trunc","~^":"ceil","~v":"floor","+1":"+","-1":"-","~":"~","%":"%","/":"/","*":"*","+":"+","-":"-",">>":">>","<<":"<<",">":">","<":"<",">=":">=","<=":"<=","=":"==","!=":"!=","&":"&","^":"^","|":"|"}
 c_translate_builtin={"delete":"free"}
@@ -1860,7 +1904,9 @@ def c_generate_returntype(type,name,context):
  if len(type.returns)==0:
   return "void",[]
  elif len(type.returns)==1:
-  return c_translate_typename(type,"",context),[]
+  return_type,declarations= c_translate_typename(type.returns[0].type,"",context)
+  assert not declarations
+  return return_type,[]
  else:
   string=""
   for parameter in type.returns:
@@ -1885,9 +1931,7 @@ def c_generate_returntype(type,name,context):
    declaration = identifier+" {"
    for index,variable in enumerate(type.returns):
     declaration+=" "
-    variable_name = variable.name
-    if not variable_name:
-     variable_name="r"+str(index)
+    variable_name="r"+str(index)
     typename,declarations = c_translate_typename(variable.type,variable_name,context)
     if declarations:
      declarations.extend(declaration_stack)
@@ -1997,23 +2041,20 @@ def c_transform_expression(destination,expression,context):
    expression = replace_expression(expression,hole_position,variable_expression)
    code = []
    if operation.type.kind in integer_types:
-    if cast_variable.type.size>4:
-     max = c_max_double[operation.type.size]
-    else:
-     max = c_max_float[operation.type.size]
     if operation.type.kind in signed_integer_types:
      code.append(" "+cast_variable.name+"="+cast_variable.name+"+"+str(s_max[operation.type.size]+1))
-    code.append(" if "+cast_variable.name+">"+max)
-    code.append("  "+cast_variable.name+"="+max)
     code.append(" if "+cast_variable.name+"<=0")
     code.append("  "+cast_variable.name+"=0")
+    code.append(" if "+cast_variable.name+">="+str(b_max[operation.type.size]))
+    code.append("  "+destination_variable.name+"="+str(b_max[operation.type.size])+size_suffix[operation.type.size])
+    code.append(" else")
     if operation.type.kind not in signed_integer_types:
-     code.append(" "+destination_variable+"="+cast_variable.name+"("+operation.type.kind+")")
+     code.append("  "+destination_variable.name+"="+cast_variable.name+"("+operation.type.kind+")")
     if operation.type.kind in signed_integer_types:
-     code.append(" "+destination_variable+"="+cast_variable.name+"("+operation.type.kind+")-"+str(s_max[operation.type.size]+1))
+     code.append("  "+destination_variable.name+"="+cast_variable.name+"("+operation.type.kind+")-"+str(s_max[operation.type.size]+1))
    elif operation.type.kind in floating_point_types:
     code.append(" "+cast_variable.name+"="+cast_variable.name+"+"+str(s_max[operation.type.size]+1))
-    code.append(" "+destination_variable+"="+cast_variable.name+"("+operation.type.kind+")-"+str(s_max[operation.type.size]+1))
+    code.append(" "+destination_variable.name+"="+cast_variable.name+"("+operation.type.kind+")-"+str(s_max[operation.type.size]+1))
    code2=parse_code_body(code,context.function)
    context.operation = "c"
    code3 = transform_code(code2,c_mark,context)
@@ -2037,9 +2078,9 @@ def c_transform_expression(destination,expression,context):
    i=0
   elif operation.kind in {"/","%"}  and "transformed" not in operation.metadata:
    divide_expression,hole_position,expression = extract_expression(expression,i)
-   operand1_variable,operand1_instruction,hole_position,divide_expression = cache_in_variable(divide_expression,divide_expression.components[-1].inputs[0],context.function,invalid_names=c_reserved_identifiers)
+   operand1_variable,operand1_instruction,_,divide_expression = cache_in_variable(divide_expression,divide_expression.components[-1].inputs[0],context.function,invalid_names=c_reserved_identifiers)
    preamble.append(operand1_instruction)
-   operand2_variable,operand2_instruction,hole_position,divide_expression = cache_in_variable(divide_expression,divide_expression.components[-1].inputs[1],context.function,invalid_names=c_reserved_identifiers)
+   operand2_variable,operand2_instruction,_,divide_expression = cache_in_variable(divide_expression,divide_expression.components[-1].inputs[1],context.function,invalid_names=c_reserved_identifiers)
    preamble.append(operand2_instruction)
    variable_expression = create_linear_expression()
    variable_expression.components.append(operand2_variable)
@@ -2157,7 +2198,7 @@ def c_translate_expression(expression,context):
    input_function = translated[operator.inputs[0]]
    translation = input_function.translation+"("
    for i in operator.inputs[1:]:
-    parameter = translated[operator.inputs[i]]
+    parameter = translated[i]
     parameter_translation = parameter.translation
     #if not context.options.precise_types and parameter.spill and expression.components[i].kind!="function":
      #if parameter.precedence > c_operator_precedence["&"]:
@@ -2185,7 +2226,7 @@ def c_translate_expression(expression,context):
    translation=input_translation.translation
    if input_translation.precedence > c_operator_precedence["c"]:
     translation = "("+translation+")"
-   translation= "("+c_get_typename(operation.type)+")"+translation
+   translation= "("+c_get_typename(operator.type,"",context)+")"+translation
    c_expression.translation = translation
    c_expression.precedence = c_operator_precedence["c"]
   elif operator.kind == "allocation":
@@ -2367,14 +2408,6 @@ def c_translate_programm(programm,c_options):
  context.options = c_options
  if context.options.precise_types:
   context.c_type=c_precise_type
- for type in unsigned_integer_types:
-  type_size = int(type[1])
-  c_max_float[type_size] = programm.global_prefix+"float_"+type+"_max"
-  c_max_double[type_size] = programm.global_prefix+"double_"+type+"_max"
-  output.append("float "+c_max_float[type_size]+";")
-  output.append("double "+c_max_double[type_size]+";")
-  output.append(c_max_float[type_size]+"=nextafterf("+str(b_max[type_size])+",0);")
-  output.append(c_max_double[type_size]+"=nextafterf("+str(b_max[type_size])+",0);")
  for function in programm.functions.values():
   for variable in function.variables.values():
    context.variables.add(variable.name)
@@ -2400,6 +2433,11 @@ def c_translate_programm(programm,c_options):
   function_declaration,declarations = c_translate_typename(function.type,function.name,context,not_pointer=True)
   output.extend(declarations)
   output.append(function_declaration+";")
+ for function in programm.functions.values():
+  for variable in function.variables.values():
+   if variable.type.kind == "fun":
+    function_declaration,declarations = c_translate_typename(variable.type,"",context,not_pointer=True)
+    output.extend(declarations)
  for object in sorted_objects:
   output.extend(c_translate_object(object,context))
  for function in programm.functions.values():
@@ -2414,3 +2452,6 @@ options = c_create_options()
 translation = c_translate_programm(programm,options)
 for line in translation:
  print(line)
+with open("test.c","w") as f:
+ for line in translation:
+  f.write(line+"\n")
