@@ -31,17 +31,22 @@ function add2(x=1 b4,y=2 b4)->(sum b4,sammy f1)
  sum = x + y
  return sum,0.
  
+function id(x b2)->(x b2)
+ return x
+ 
 function main
  func = add
  byte = 0b
  short = 0s
  int = 0i
+ int = 0b010101010101+..0
+ int = 4 >>> 12
  loop
   cool = 4s
   if int>2
  break
   elif func!=add
-   cool}+2
+   cool} + 2*6-3
  long = 0l
  float = 0f
  signed = 1i-
@@ -49,7 +54,7 @@ function main
  half = 0h
  tiny = 0q
  array = b4*(20)
- int = array[4]
+ array[id(1)+4] = 1
  //array2 = array+4
  obj = my_obj()
  obj.value = 7
@@ -79,6 +84,8 @@ binary_integer_operators = {"^","&","|"}|binary_asymetric_operators
 binary_numeric_operators = {"+","-","*","/","%",">","<",">=","<="}|binary_integer_operators
 binary_operators = {"=","!="}|binary_numeric_operators
 operators = unary_operators|binary_operators
+optional_operators = {"+#1","+0..","+..0",">>>","<<<"}
+mandatory_operators = operators - optional_operators
 
 literal_unary_float_operators = {"~.","~^","~v"}
 literal_unary_integer_operators = {"+#1","+0..","+..0"}
@@ -175,7 +182,7 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 #avoid reserved identifiers
 #done ^ todo v
 #translate optional operators
-#pointer arithmetic
+#pointer arithmetic? / c void*
 #constant pointer types
 #constant optimization
 #print types correctly in error messages
@@ -565,6 +572,147 @@ def transform_code(code,transformer,context):
     instruction.body = transform_code(instruction.body,transformer,context)
    i+=1
  return code
+
+def cache_binary_operator(expression,operator_index,context,invalid_names=None):
+ preamble=[]
+ binary_expression,hole_position,expression = extract_expression(expression,operator_index)
+ operand1_variable,operand1_instruction,hole_position,binary_expression = cache_in_variable(binary_expression,binary_expression.components[-1].inputs[0],context.function,invalid_names=invalid_names)
+ preamble.append(operand1_instruction)
+ variable_expression = create_linear_expression()
+ variable_expression.components.append(operand1_variable)
+ variable_expression.positions.append((0,0,0))
+ expression = replace_expression(expression,hole_position,variable_expression)
+ operand2_variable,operand2_instruction,hole_position,binary_expression = cache_in_variable(binary_expression,binary_expression.components[-1].inputs[1],context.function,invalid_names=invalid_names)
+ preamble.append(operand2_instruction)
+ return operand1_variable,operand2_variable,preamble,expression
+
+def transform_optional_operators(destination,expression2,context):
+ preamble=[]
+ for expression in [destination,expression2]:
+  i=0
+  while expression and i<len(expression.components):
+   operation = expression.components[i]
+   if operation.kind in optional_operators and operation.kind not in context.supported_operators:
+    if operation.kind in {">>>","<<<"}:
+     operand1,operand2,declarations,expression = cache_binary_operator(expression,i,context)
+     preamble.extend(declarations)
+     code=[]
+     shift = operation.kind[:-1]
+     if shift[0]==">":
+      shift2 = "<<"
+     else:
+      shift2 = ">>"
+     code.append(" "+operand1.name+"="+operand1.name+shift+operand2.name+"  |  "+operand1.name+" "+shift2+" "+str(bit_size[operation.type.size])+"-"+operand2.name)
+     code2=parse_code_body(code,context.function)
+     preamble.extend(code2)
+     i=0
+    elif operation.kind=="+#1":
+     variable,variable_assignment,hole_position,expression = cache_in_variable(expression,i,context.function)
+     variable_assignment.expression.components = variable_assignment.expression.components[:-1]
+     variable_assignment.expression.positions = variable_assignment.expression.positions[:-1]
+     preamble.append(variable_assignment)
+     variable_expression=create_linear_expression()
+     variable_expression.components.append(variable)
+     variable_expression.positions.append((0,0,0))
+     expression = replace_expression(expression,hole_position,variable_expression)
+     code=[]
+     if "popcount" not in context.function.metadata:
+      m1 = generate_variable_name(context.function,name_prefix="m1")
+      m2 = generate_variable_name(context.function,name_prefix="m2")
+      m4 = generate_variable_name(context.function,name_prefix="m4")
+      context.function.metadata["popcount"]=(m1,m2,m4)
+      code.append(" "+m1+"=0x5555555555555555"+"l")
+      code.append(" "+m2+"=0x3333333333333333"+"l")
+      code.append(" "+m4+"=0x0f0f0f0f0f0f0f0f"+"l")
+     m1,m2,m4 = context.function.metadata["popcount"]
+     code.append(" "+variable.name+"="+variable.name+" - "+variable.name+">>1&"+m1+"(b"+str(operation.type.size)+")")
+     code.append(" "+variable.name+"="+variable.name+"&"+m2+"(b"+str(operation.type.size)+")"+" + "+variable.name+">>2&"+m2+"(b"+str(operation.type.size)+")")
+     code.append(" "+variable.name+"="+variable.name+">>4+"+variable.name+"&"+m4+"(b"+str(operation.type.size)+")")
+     size = operation.type.size
+     size2 = 8
+     while size>1:
+      code.append(" "+variable.name+"="+variable.name+">>"+str(size2)+"+"+variable.name)
+      size = size//2
+      size2 = size2*2
+     code.append(" "+variable.name+"}&0x"+format(bitshift_mask[operation.type.size],"x"))
+     code2=parse_code_body(code,context.function)
+     preamble.extend(code2)
+     i=0
+    elif operation.kind in {"+0..","+..0"}:
+     variable,variable_assignment,hole_position,expression = cache_in_variable(expression,i,context.function)
+     variable_assignment.expression.components = variable_assignment.expression.components[:-1]
+     variable_assignment.expression.positions = variable_assignment.expression.positions[:-1]
+     preamble.append(variable_assignment)
+     variable_expression=create_linear_expression()
+     variable_expression.components.append(variable)
+     variable_expression.positions.append((0,0,0))
+     expression = replace_expression(expression,hole_position,variable_expression)
+     code=[]
+     if operation.kind =="+..0" and "count_trailing_zeros" not in context.function.metadata:
+      z1 = generate_variable_name(context.function,name_prefix="z1")
+      z2 = generate_variable_name(context.function,name_prefix="z2")
+      z4 = generate_variable_name(context.function,name_prefix="z4")
+      z8 = generate_variable_name(context.function,name_prefix="z8")
+      z16 = generate_variable_name(context.function,name_prefix="z16")
+      z32 = generate_variable_name(context.function,name_prefix="z32")
+      context.function.metadata["count_trailing_zeros"]=(z1,z2,z4,z8,z16,z32)
+      code.append(" "+z1+"=0xaaaaaaaaaaaaaaaa"+"l")
+      code.append(" "+z2+"=0xcccccccccccccccc"+"l")
+      code.append(" "+z4+"=0xf0f0f0f0f0f0f0f0"+"l")
+      code.append(" "+z8+"=0xff00ff00ff00ff00"+"l")
+      code.append(" "+z16+"=0xffff0000ffff0000"+"l")
+      code.append(" "+z32+"=0xffffffff00000000"+"l")
+     elif operation.kind =="+0.." and "count_leading_zeros" not in context.function.metadata:
+      z1 = generate_variable_name(context.function,name_prefix="z1")
+      z2 = generate_variable_name(context.function,name_prefix="z2")
+      z4 = generate_variable_name(context.function,name_prefix="z4")
+      z8 = generate_variable_name(context.function,name_prefix="z8")
+      z16 = generate_variable_name(context.function,name_prefix="z16")
+      z32 = generate_variable_name(context.function,name_prefix="z32")
+      context.function.metadata["count_leading_zeros"]=(z1,z2,z4,z8,z16,z32)
+      code.append(" "+z1+"=0x5555555555555555"+"l")
+      code.append(" "+z2+"=0x3333333333333333"+"l")
+      code.append(" "+z4+"=0x0f0f0f0f0f0f0f0f"+"l")
+      code.append(" "+z8+"=0x00ff00ff00ff00ff"+"l")
+      code.append(" "+z16+"=0x0000ffff0000ffff"+"l")
+      code.append(" "+z32+"=0x00000000ffffffff"+"l")
+     if operation.kind == "+0..":
+      z1,z2,z4,z8,z16,z32 = context.function.metadata["count_leading_zeros"]
+     else:
+      z1,z2,z4,z8,z16,z32 = context.function.metadata["count_trailing_zeros"]
+     var2 = generate_variable_name(context.function)
+     z_cast = ""
+     if operation.type.size<8 or operation.type.kind[0]=="s":
+      z_cast="("+operation.type.kind+")"
+     code.append(" "+variable.name+"="+variable.name+" & "+variable.name+"~+1")
+     code.append(" if "+variable.name+"=0")
+     code.append("  "+variable.name+"="+str(bit_size[operation.type.size]))
+     code.append(" else")
+     tmp_code ="  "+var2+"="+variable.name+"&"+z1+z_cast+"!=0"
+     tmp_code+=" | "+variable.name+"&"+z2+z_cast+"!=0<<1"
+     tmp_code+=" | "+variable.name+"&"+z4+z_cast+"!=0<<2"
+     if operation.type.size>1:
+      tmp_code+=" | "+variable.name+"&"+z8+z_cast+"!=0<<3"
+     if operation.type.size>2:
+      tmp_code+=" | "+variable.name+"&"+z16+z_cast+"!=0<<4"
+     if operation.type.size>4:
+      tmp_code+=" | "+variable.name+"&"+z32+z_cast+"!=0<<5"
+     code.append(tmp_code)
+     code.append("  "+variable.name+"="+var2+"("+operation.type.kind+")")
+     code2=parse_code_body(code,context.function)
+     preamble.extend(code2)
+     i=0
+   else:
+    i+=1
+ return destination,expression2,preamble
+
+def convert_unsupported_operators(supported_operators):
+ context = pynamespace()
+ context.supported_operators = supported_operators
+ for function in programm.functions.values():
+  context.function = function
+  function.body = transform_code(function.body,transform_optional_operators,context)
+  function.metadata.clear()
 
 def parse_identifier_string(line):
  i=0
@@ -1925,8 +2073,6 @@ def c_generate_returntype(type,name,context):
     first_try=False
    declaration_stack = []
    identifier = programm.global_prefix+identifier
-   if not context.options.typedef:
-    identifier = "struct "+identifier    
    return_type = identifier
    declaration = identifier+" {"
    for index,variable in enumerate(type.returns):
@@ -1938,9 +2084,11 @@ def c_generate_returntype(type,name,context):
      declaration_stack=declarations
     declaration+=typename+";"
    declaration+="};"
+   declaration_stack.append("struct "+declaration)
    if context.options.typedef:
     declaration_stack.append("typedef struct "+return_type+" "+return_type+";")
-   declaration_stack.append(declaration)
+   else:
+    return_type = "struct "+return_type
    context.returntypes[string] = (return_type,declaration)
    return return_type,declaration_stack
   else:
@@ -2168,7 +2316,7 @@ def c_translate_expression(expression,context):
        translation="("+translation+")"
       translation += "&0x"+format(type_mask[operator.type.size],"x")
       input.precedence = c_operator_precedence["&"]
-    if input.precedence > c_operator_precedence[operator.kind]:
+    if input.precedence > c_operator_precedence[operator.kind] or (input.precedence == c_operator_precedence[operator.kind] and (input.precedence!=2 and i==1 or input.precedence==2 and i==0)):
      translation="("+translation+")"
     input_translations.append(translation)
    if operator.kind in unary_operators:
@@ -2330,6 +2478,7 @@ def c_translate_code(code,function,context):
      body.append("}")
   else:
    assert False
+  print(output)
  return body
  
 def c_translate_function(function,context):
@@ -2372,19 +2521,26 @@ def c_translate_object(object,context):
  else:
   sorted_fields = object.variables
  object_typename,_ = c_translate_typename(object.type,"",context,not_pointer=True)
- output.append(object_typename+" {")
+ if context.options.typedef:
+  output.append("struct "+object_typename+" {")
+ else:
+  output.append(object_typename+" {")
  declarations = []
  for field in sorted_fields:
   field_name,declarations2 = c_translate_typename(field.type,field.name,context)
   if declarations2:
    declarations2.extend(declarations)
    declarations=declarations2
-  output.append(" "+field_name+";")
+  field_name2 = parse_identifier_string(field_name)
+  if field_name2 == object_typename:
+   output.append(" struct "+field_name+";")
+  else:
+   output.append(" "+field_name+";")
  output.append("};")
  declarations.extend(output)
  output = declarations
  if context.options.typedef:
-  output.append("typedef struct "+object_c_name+" "+object_c_name+";")
+  output.append("typedef struct "+object_typename+" "+object_typename+";")
  return output
   
 def c_compute_object_alignment(object,context):
@@ -2400,6 +2556,7 @@ def c_compute_object_alignment(object,context):
   
 #remember to disable strict aliasing
 def c_translate_programm(programm,c_options):
+ convert_unsupported_operators({})
  output = []
  output.append("#include <stdlib.h>")
  output.append("#include <stdint.h>")
