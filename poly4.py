@@ -13,8 +13,12 @@ namespace really_long_name end
 namespace main
 import really_long_name as imp
 
+object nest2
+ for my_obj
+
 object nest
  content s8
+ nested nest2*1
 
 object my_obj
  value b4
@@ -22,6 +26,9 @@ object my_obj
  leaf my_obj
  nested nest*1
  imported_object imp.my_obj
+ 
+function nester(nested fun(nested2 fun*(b4*)->(fun(b4)->()),void fun),nested3 fun(my_obj)->(fun))->(func fun(b1,b2)->())
+ return add(fun(b1,b2)->())
  
 function add(x b4,y b4)->(b4,f1)
  sum = x+y
@@ -180,13 +187,14 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 #c signed /%, cast to int
 #c code block namespaces
 #avoid reserved identifiers
-#done ^ todo v
 #translate optional operators
-#pointer arithmetic? / c void*
+#reserved name avoidance
+#done ^ todo v
+#support no namespace
+#mark nested types as constant and prevent casting them
 #constant pointer types
 #constant optimization
 #print types correctly in error messages
-#mark nested object types as constant
 #figure out how to handle array length
 #preserve constant base
 #preserve comments
@@ -196,6 +204,7 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 #vectors
 #atomics
 #c optimize spillage
+#pointer arithmetic? / c void*
 
  
  
@@ -401,17 +410,34 @@ def check_variable_name(name,function):
   return True
  return False
  
-def generate_variable_name(function,invalid_names=None,name_prefix=""):
- if not invalid_names:
-  invalid_names=set()
+def generate_variable_name(function,invalid_names=set(),name_prefix=""):
  if name_prefix and name_prefix not in invalid_names and check_variable_name(name_prefix,function):
   return name_prefix
  while True:
   variable_name = generate_identifier(name_prefix)
-  qualified_name = function.namespace.name+"_"+variable_name
   if variable_name not in invalid_names and check_variable_name(variable_name,function):
    break
  return variable_name
+ 
+def check_global_name(name):
+ for function in programm.functions.values():
+  if name in function.variables:
+   return False
+ for namespace in programm.namespaces.values():
+  if name == namespace.name or name in namespace.imports:
+   return False
+ if name in default_types|reserved_identifiers or name in programm.functions or name in programm.objects:
+  return False
+ return True
+ 
+def generate_global_name(name_prefix="",invalid_names=set()):
+ if name_prefix and name_prefix not in invalid_names and check_global_name(name_prefix):
+  return name_prefix
+ while True:
+  global_name = generate_identifier(name_prefix)
+  if global_name not in invalid_names and check_global_name(global_name):
+   break
+ return global_name
  
 def generate_variable(type,function,invalid_names=None,name_prefix=""):
  variable=create_variable()
@@ -520,7 +546,7 @@ def replace_expression(expression,position,replacement_expression):
  expression.positions = expression.positions[:position]+replacement_expression.positions+expression.positions[position+1:]
  return expression
   
-def cache_in_variable(expression,position,function,invalid_names=None,name_prefix=""):
+def cache_in_variable(expression,position,function,invalid_names=set(),name_prefix=""):
  assignment = create_assignment()
  assignment.new_variable=True
  variable = generate_variable(expression.components[position].type,function,invalid_names,name_prefix)
@@ -538,6 +564,30 @@ def rename_variable(old_name,new_name,function):
  variable.name = new_name
  function.variables[new_name] = variable
  del function.variables[old_name]
+
+def replace_reserved_identifiers(reserved_identifiers):
+ for function in programm.functions.values():
+  if function.name in reserved_identifiers:
+   function.name = generate_global_name(function.name,reserved_identifiers)
+  for variable in list(function.variables):
+   if variable in reserved_identifiers:
+    new_name = generate_variable_name(function,invalid_names=reserved_identifiers,name_prefix=variable)
+    rename_variable(variable,new_name,function)
+ type_translations = {}
+ for object in programm.objects.values():
+  if object.name in reserved_identifiers:
+   type_translations[object.name]=generate_global_name(object.name,reserved_identifiers)
+   object.name = type_translations[object.name]
+ rename_types(type_translations)
+ type_translations.clear()
+ for object in programm.objects.values():
+  for variable in object.variables.values():
+   if variable.name in reserved_identifiers:
+    type_translations[object.name+variable.name]=generate_variable_name(object,reserved_identifiers,variable.name)
+    variable.name = type_translations[object.name+variable.name]
+ rename_fields(type_translations)
+ 
+ 
 
 def transform_instruction(instruction,transformer,context):
  declarations=[]
@@ -573,7 +623,7 @@ def transform_code(code,transformer,context):
    i+=1
  return code
 
-def cache_binary_operator(expression,operator_index,context,invalid_names=None):
+def cache_binary_operator(expression,operator_index,context,invalid_names=set()):
  preamble=[]
  binary_expression,hole_position,expression = extract_expression(expression,operator_index)
  operand1_variable,operand1_instruction,hole_position,binary_expression = cache_in_variable(binary_expression,binary_expression.components[-1].inputs[0],context.function,invalid_names=invalid_names)
@@ -586,6 +636,51 @@ def cache_binary_operator(expression,operator_index,context,invalid_names=None):
  preamble.append(operand2_instruction)
  return operand1_variable,operand2_variable,preamble,expression
 
+def transform_rename_fields(destination,expression2,context):
+ preamble=[]
+ type_translations = context.type_translations
+ for expression in [destination,expression2]:
+  if expression:
+   for i,operation in enumerate(expression.components):
+    if i>0 and operation.kind=="." and expression.components[i-1].type.kind+operation.inputs[1] in type_translations:
+     operation.inputs[1]=type_translations[expression.components[i-1].type.kind+operation.inputs[1]]
+ return destination,expression2,preamble
+
+def rename_fields(type_translations):
+ context = pynamespace()
+ context.type_translations = type_translations
+ for function in programm.functions.values():
+  context.function = function
+  function.body = transform_code(function.body,transform_rename_fields,context)
+
+def transform_rename_types(destination,expression2,context):
+ preamble=[]
+ type_translations = context.type_translations
+ for expression in [destination,expression2]:
+  if expression:
+   for operation in expression.components:
+    if operation.type and operation.type.kind in type_translations:
+     operation.type.kind = type_translations[operation.type.kind]
+ return destination,expression2,preamble
+
+def rename_types(type_translations):
+ for object in programm.objects.values():
+  for variable in object.variables.values():
+   if variable.type.kind in type_translations:
+    variable.type.kind = type_translations[variable.type.kind]
+ context = pynamespace()
+ context.type_translations = type_translations
+ for function in programm.functions.values():
+  context.function = function
+  function.body = transform_code(function.body,transform_rename_types,context)
+  for variable in function.parameters:
+   if variable.type.kind in type_translations:
+    variable.type.kind = type_translations[variable.type.kind]
+  for variable in function.returns:
+   if variable.type.kind in type_translations:
+    variable.type.kind = type_translations[variable.type.kind]
+    
+    
 def transform_optional_operators(destination,expression2,context):
  preamble=[]
  for expression in [destination,expression2]:
@@ -1107,10 +1202,9 @@ def parse_type(context):
     type.void=False
     context.offset=offset
     type.parameters,type.returns,signature_string,type.parameter_names,type.return_names = parse_function_signature(context,names_required=False)
-    type.string = "fun"+signature_string
+    type.string += signature_string
    else:
     type.void=True
-    type.string = type.string[:3]+"*"+type.string[3:]
  return type
  
 def parse_unary_operator(operator,context):
@@ -1187,7 +1281,7 @@ def parse_unary_operator(operator,context):
    operation.type.pointer = None
    return operation,subexpression_end+1
   elif operator == "(":
-   if input.kind!="function" and input.kind!="object" and (input.type.kind!="fun" or  parse_identifier_string(line[offset+1:]) == "fun"):
+   if input.kind!="object" and (input.kind!="function" and input.type.kind!="fun" or  parse_identifier_string(line[offset+1:]) == "fun"):
     #typeconversion
     operation.kind="c"
     offset+=1
@@ -2051,7 +2145,7 @@ c_reserved_identifiers={"alignas","alignof","auto","bool","break","case","char",
 def c_generate_returntype(type,name,context):
  if len(type.returns)==0:
   return "void",[]
- elif len(type.returns)==1:
+ elif len(type.returns)==1 and type.returns[0].type.kind!="fun":
   return_type,declarations= c_translate_typename(type.returns[0].type,"",context)
   assert not declarations
   return return_type,[]
@@ -2109,14 +2203,15 @@ def c_translate_typename(type,name,context,not_pointer=False):
   else:
    if not context.options.typedef:
     output+="struct "
-   output+=programm.global_prefix+type.kind+" "
+   output+=programm.global_prefix+type.kind
   if not type.pointer and type.kind in numeric_types or not_pointer:
-   output+=name
+   if name:
+    output+=" "+name
   else:
    if not type.nested:
-    output+="*"+name
+    output+=" *"+name
    else:
-    output+=name+"["+str(type.length)+"]"
+    output+=" "+name+"["+str(type.length)+"]"
  else:
   if not type.void:
    output,declarations = c_generate_returntype(type,name,context)
@@ -2126,7 +2221,10 @@ def c_translate_typename(type,name,context,not_pointer=False):
    else:
     output+=name+"("
    for variable in type.parameters:
-    variable_string,declarations2 = c_translate_typename(variable.type,variable.name,context)
+    variable_name = ""
+    if not_pointer:
+     variable_name=variable.name
+    variable_string,declarations2 = c_translate_typename(variable.type,variable_name,context)
     declarations2.extend(declarations)
     declarations=declarations2
     output+=variable_string+","
@@ -2418,7 +2516,7 @@ def c_translate_code(code,function,context):
  body = []
  for instruction in code:
   output=""
-  if instruction.kind == "assignment" and not instruction.special:
+  if instruction.kind == "assignment" and not instruction.special and (instruction.expression.components[-1].type.kind!="fun" or  instruction.expression.components[-1].returns[0].type.kind!="fun"):
    #if not instruction.new_variable:
    output = c_translate_expression(instruction.destination,context)
    #else:
@@ -2427,11 +2525,11 @@ def c_translate_code(code,function,context):
    output+="="
    output+= c_translate_expression(instruction.expression,context)
    body.append(output+";")
-  elif instruction.kind == "assignment" and instruction.special:
+  elif instruction.kind == "assignment":
    if not instruction.destination:
     output = c_translate_expression(instruction.expression,context)
     body.append(output+";")
-   elif instruction.destination=="return" and len(instruction.expression)<2:
+   elif instruction.destination=="return" and len(instruction.expression)<2 and instruction.expression[0].components[-1].type.kind!="fun":
     output = "return"
     if instruction.expression:
      output+=" "+c_translate_expression(instruction.expression[0],context)
@@ -2485,10 +2583,10 @@ def c_translate_function(function,context):
  body = []
  context.function=function
  body.append(c_get_typename(function.type,function.name,context,not_pointer=True)+" {")
- for variable in list(function.variables):
+ """for variable in list(function.variables):
   if variable in c_reserved_identifiers:
    new_name = generate_variable_name(function,invalid_names=c_reserved_identifiers,name_prefix=variable)
-   rename_variable(variable,new_name,function)
+   rename_variable(variable,new_name,function)"""
  function.body = transform_code(function.body,c_transform_expression,context)
  body2 = []
  for variable in function.variables.values():
@@ -2520,7 +2618,8 @@ def c_translate_object(object,context):
   assert len(sorted_fields)==len(object.variables)
  else:
   sorted_fields = object.variables
- object_typename,_ = c_translate_typename(object.type,"",context,not_pointer=True)
+ object_typename,declarations = c_translate_typename(object.type,"",context,not_pointer=True)
+ assert not declarations
  if context.options.typedef:
   output.append("struct "+object_typename+" {")
  else:
@@ -2557,6 +2656,7 @@ def c_compute_object_alignment(object,context):
 #remember to disable strict aliasing
 def c_translate_programm(programm,c_options):
  convert_unsupported_operators({})
+ replace_reserved_identifiers(c_reserved_identifiers)
  output = []
  output.append("#include <stdlib.h>")
  output.append("#include <stdint.h>")
@@ -2586,6 +2686,9 @@ def c_translate_programm(programm,c_options):
   nested_objects.clear()
  for object in sorted_objects:
   c_compute_object_alignment(object,context)
+  object_typename,declarations = c_translate_typename(object.type,"",context,not_pointer=True)
+  assert not declarations
+  output.append(object_typename+";")
  for function in programm.functions.values():
   function_declaration,declarations = c_translate_typename(function.type,function.name,context,not_pointer=True)
   output.extend(declarations)
