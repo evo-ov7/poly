@@ -3,6 +3,14 @@ import types as ttttttt
 pynamespace = ttttttt.SimpleNamespace
 sample_programm = """
 //blash
+namespace
+object void
+ test b4
+ 
+object test2
+ test2 void
+namespace end
+
 namespace really_long_name
 object my_obj
  bit b1
@@ -13,18 +21,20 @@ namespace really_long_name end
 namespace main
 import really_long_name as imp
 
+
+
 object nest2
  for my_obj
 
 object nest
  content s8
- nested nest2*1
+ nested nest2*0
 
 object my_obj
  value b4
  composite_array b4*8
  leaf my_obj
- nested nest*1
+ nested nest*0
  imported_object imp.my_obj
  
 function nester(nested fun(nested2 fun*(b4*)->(fun(b4)->()),void fun),nested3 fun(my_obj)->(fun))->(func fun(b1,b2)->())
@@ -140,6 +150,7 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 
 
 #unused symbols ` ' " ; @ $ \ : { } ?
+#negative numbers are two's complement, overflow is always mod 2^N where N is the total number of bits in the type
 #unary operators
 # + absolute value            only for signed/floats
 # - negate                    only for signed/floats
@@ -148,26 +159,34 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 # ~ round to nearest          in case of multiple nearest values, the result may be any of them
 # ~. round to zero            
 # ~^ round to infinity        
-# ~v ~_ round to -infinity
+# ~v round to negative infinity
 # +#1 popcount
 # +0.. count leading zeros
 # +..0 count trailing zeros
-# (type) typeconversion       conversion of values is only defined, if the target type can contain (even just approximatley) the converted value. the only excepiton are signed/unsigned integers where conversions between types of equal size use the two's complement representation
+# (type) typeconversion       
+#only some conversions are allowed, they are:
+#conversions between different sizes of the same number type. if the destination type is smaller, the most significant bytes of integers are truncated and floating point numbers are rounded to the nearest representable value. if the destination type is larger, signed integers are sign-extended, unsigned integers are zero-extended and floating point numbers are rounded to the nearest representable value.
+#conversions between signed and unsigned integers truncate if the destination type is smaller and ALWAYS zero-extend if the destination type is larger. there is also NO conversion of negative numbers, the two's complement is left as-is.
+#conversions between integers and floats always result in the nearest representable value of the target type(clamping).
+#conversions between integer pointer types, only to a type of the same or smaller size as the source, the data itself is not converted
+#conversions from any pointer type,object type or function type to void and back. the resulting reference is only allowed to be used if the type before and after conversion to/from void is the same.
+#conversions between any function type, uncluding void function. the resulting function may only be called if the function signature of the casted-to type matches the signature of the function pointed to.
+# 
 # . component access
 # [ array access
 # (arg,arg2) function call
 #
 #binary operators
-# + add                          overflow is always mod 2^N
-# - subtract                     overflow is always mod 2^N
-# * multiply                     result is the lower half of the true result, overflow is mod 2^N
-# / division                     result is the quotient rounded towards zero, overflow is mod 2^N, if the divisor is 0 the result is 0
-# % mod/remainder                result is the remainder with same sign as dividend, if the divisor is 0 the result is the dividend
+# + add
+# - subtract
+# * multiply                     result is the lower half of the true result
+# / division                     result is the quotient rounded towards zero, if the divisor is 0 the result is 0
+# % mod/remainder                result is the remainder with same sign as quotient, if the divisor is 0 the result is the dividend
 # ^ xor
 # & and
 # | or
 # >> << bitshift                 signed right shift is sign-extending
-# >>> <<< rotate?
+# >>> <<< rotate
 # > < >= <= = != comparison      
 #
 #function operators?
@@ -189,13 +208,15 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 #avoid reserved identifiers
 #translate optional operators
 #reserved name avoidance
+#support empty namespace
+#c add missing sign-extension when casting
 #done ^ todo v
-#support no namespace
 #mark nested types as constant and prevent casting them
-#constant pointer types
 #constant optimization
+#method syntax
 #print types correctly in error messages
 #figure out how to handle array length
+#warning for ambiguous keyword parameters
 #preserve constant base
 #preserve comments
 #generics
@@ -215,7 +236,9 @@ def create_programm():
  programm.namespaces = {}
  programm.objects = {}
  programm.parsed = False
+ programm.done =False
  programm.global_prefix = ""
+ programm.namespace_seperator="_"
  programm.next_identifier =0
  return programm
  
@@ -249,6 +272,7 @@ def create_object():
  object.namespace = ""
  object.kind = "object"
  object.variables = {}
+ object.methods = []
  object.body = []
  object.type = None
  object.inputs=[]
@@ -323,7 +347,7 @@ def create_control_flow():
 def warning(message,position,lineno):
  traceback.print_stack()
  if len(position) == 1:
-  position = (position,0,len(source_lines[position]))
+  position = (position[0],0,len(source_lines[position[0]]))
  line,start,end = position
  #if line>0:
   #print(str(line-1)+": "+source_lines[line-1])
@@ -405,7 +429,7 @@ def generate_identifier(name_prefix=""):
  return basename
  
 def check_variable_name(name,function):
- qualified_name = function.namespace.name+"_"+name
+ qualified_name = function.namespace.name+programm.namespace_seperator+name
  if name not in function.variables and name not in default_types|reserved_identifiers and name not in function.namespace.imports and qualified_name not in programm.functions and qualified_name not in programm.objects:
   return True
  return False
@@ -430,11 +454,18 @@ def check_global_name(name):
   return False
  return True
  
-def generate_global_name(name_prefix="",invalid_names=set()):
- if name_prefix and name_prefix not in invalid_names and check_global_name(name_prefix):
-  return name_prefix
+def generate_global_name(name_prefix="",invalid_names=set(),namespace=""):
+ global_prefix =""
+ if programm.done:
+  global_prefix=programm.global_prefix
+ if namespace:
+  namespace+=programm.namespace_seperator
+ name = global_prefix+namespace+name_prefix
+ if name:
+  if name not in invalid_names and check_global_name(name):
+   return name
  while True:
-  global_name = generate_identifier(name_prefix)
+  global_name = generate_identifier(name)
   if global_name not in invalid_names and check_global_name(global_name):
    break
  return global_name
@@ -565,30 +596,67 @@ def rename_variable(old_name,new_name,function):
  function.variables[new_name] = variable
  del function.variables[old_name]
 
+def rename_function(old_name,new_name):
+ assert check_global_name(new_name)
+ function = programm.functions[old_name]
+ function.name = new_name
+ programm.functions[function.name] = function
+ del programm.functions[old_name]
+ 
+def rename_objects(objects):
+ type_translations = {}
+ for old_name,new_name in objects:
+  assert check_global_name(new_name)
+  object = programm.objects[old_name]
+  type_translations[old_name]=new_name
+  object.name = new_name
+  object.type.kind = new_name
+  programm.objects[object.name] = object
+  del programm.objects[old_name]
+ rename_types(type_translations)
+ 
+def rename_fields(fields):
+ type_translations={}
+ for old_name,new_name,object in fields:
+  type_translations[object.name+old_name]=new_name
+  variable = object.variables[old_name]
+  variable.name = new_name
+  object.variables[variable.name] = variable
+  del object.variables[old_name]
+ rename_fields2(type_translations)
+
 def replace_reserved_identifiers(reserved_identifiers):
- for function in programm.functions.values():
+ for function in list(programm.functions.values()):
   if function.name in reserved_identifiers:
+   old_name = function.name
    function.name = generate_global_name(function.name,reserved_identifiers)
+   programm.functions[function.name] = function
+   del programm.functions[old_name]
   for variable in list(function.variables):
    if variable in reserved_identifiers:
     new_name = generate_variable_name(function,invalid_names=reserved_identifiers,name_prefix=variable)
     rename_variable(variable,new_name,function)
  type_translations = {}
- for object in programm.objects.values():
+ for object in list(programm.objects.values()):
   if object.name in reserved_identifiers:
    type_translations[object.name]=generate_global_name(object.name,reserved_identifiers)
+   old_name = object.name
    object.name = type_translations[object.name]
+   object.type.kind = object.name
+   programm.objects[object.name] = object
+   del programm.objects[old_name]
  rename_types(type_translations)
  type_translations.clear()
- for object in programm.objects.values():
-  for variable in object.variables.values():
+ for object in list(programm.objects.values()):
+  for variable in list(object.variables.values()):
    if variable.name in reserved_identifiers:
     type_translations[object.name+variable.name]=generate_variable_name(object,reserved_identifiers,variable.name)
+    old_name = variable.name
     variable.name = type_translations[object.name+variable.name]
- rename_fields(type_translations)
+    object.variables[variable.name] = variable
+    del object.variables[old_name]
+ rename_fields2(type_translations)
  
- 
-
 def transform_instruction(instruction,transformer,context):
  declarations=[]
  if instruction.kind=="assignment" and (not instruction.special or not instruction.destination):
@@ -646,7 +714,7 @@ def transform_rename_fields(destination,expression2,context):
      operation.inputs[1]=type_translations[expression.components[i-1].type.kind+operation.inputs[1]]
  return destination,expression2,preamble
 
-def rename_fields(type_translations):
+def rename_fields2(type_translations):
  context = pynamespace()
  context.type_translations = type_translations
  for function in programm.functions.values():
@@ -679,7 +747,6 @@ def rename_types(type_translations):
   for variable in function.returns:
    if variable.type.kind in type_translations:
     variable.type.kind = type_translations[variable.type.kind]
-    
     
 def transform_optional_operators(destination,expression2,context):
  preamble=[]
@@ -783,7 +850,7 @@ def transform_optional_operators(destination,expression2,context):
      code.append(" if "+variable.name+"=0")
      code.append("  "+variable.name+"="+str(bit_size[operation.type.size]))
      code.append(" else")
-     tmp_code ="  "+var2+"="+variable.name+"&"+z1+z_cast+"!=0"
+     tmp_code ="  "+variable.name+"="+variable.name+"&"+z1+z_cast+"!=0"
      tmp_code+=" | "+variable.name+"&"+z2+z_cast+"!=0<<1"
      tmp_code+=" | "+variable.name+"&"+z4+z_cast+"!=0<<2"
      if operation.type.size>1:
@@ -793,7 +860,6 @@ def transform_optional_operators(destination,expression2,context):
      if operation.type.size>4:
       tmp_code+=" | "+variable.name+"&"+z32+z_cast+"!=0<<5"
      code.append(tmp_code)
-     code.append("  "+variable.name+"="+var2+"("+operation.type.kind+")")
      code2=parse_code_body(code,context.function)
      preamble.extend(code2)
      i=0
@@ -892,7 +958,7 @@ def new_variable(variable_name,variable_start,variable_type,context):
    error("cannot use imported namespace "+variable_name+" as variable",(context.line_position,variable_start,variable_start+len(variable_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
   if variable_name in context.function.variables:
    error("variable "+variable_name+" already exists in "+context.function.name,(context.line_position,variable_start,variable_start+len(variable_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
-  qualified_name = context.function.namespace.name+"_"+variable_name
+  qualified_name = context.function.namespace.name+programm.namespace_seperator+variable_name
   if qualified_name in programm.objects:
    error("cannot use object "+variable_name+" as variable",(context.line_position,variable_start,variable_start+len(variable_name)),inspect.getframeinfo(inspect.currentframe()).lineno)
   if qualified_name in programm.functions:
@@ -1151,6 +1217,7 @@ def parse_function_signature(context,names_required=True):
 def parse_type(context):
  line = context.line
  offset = context.offset
+ type_start = offset
  basename = parse_identifier_string(line[offset:])
  if not basename:
   if  line[offset]=="*":
@@ -1160,7 +1227,7 @@ def parse_type(context):
  type = create_type()
  if basename in context.namespace.imports:
   offset2= offset+len(basename)
-  basename = context.namespace.imports[basename]+"_"
+  basename = context.namespace.imports[basename]+programm.namespace_seperator
   if offset2>=len(line) or line[offset2]!=".":
    error("expected namespaced type name",(context.line_position,offset2,offset2+1),inspect.getframeinfo(inspect.currentframe()).lineno)
   offset2+=1
@@ -1175,7 +1242,7 @@ def parse_type(context):
  elif basename not in default_types:
   offset2=len(basename)
   type.string = basename
-  basename = context.namespace.name+"_"+basename
+  basename = context.namespace.name+programm.namespace_seperator+basename
   if programm.parsed and basename not in programm.objects:
    error("unknown type "+basename,(context.line_position,offset,offset+offset2),inspect.getframeinfo(inspect.currentframe()).lineno)
   offset+=offset2
@@ -1196,6 +1263,10 @@ def parse_type(context):
    if offset>start:
     type.length = int(line[start:offset])
     type.nested = True
+    if type.length==0:
+     if type.kind in numeric_compatible_types:
+      error("single numbers are already nested",(context.line_position,type_start,offset),inspect.getframeinfo(inspect.currentframe()).lineno)
+     type.pointer=False
     type.string += line[start:offset]
   if basename == "fun":
    if line[offset]=="(":
@@ -1410,7 +1481,7 @@ def parse_unary_operator_stack(context):
    identifier2 = parse_identifier_string(line[offset+1:])
    if not identifier2:
     error("expected identifier after .",(context.line_position,offset+1,offset+2),inspect.getframeinfo(inspect.currentframe()).lineno)
-   identifier = function.namespace.imports[identifier]+"_"+identifier2
+   identifier = function.namespace.imports[identifier]+programm.namespace_seperator+identifier2
    offset += len(identifier2)+1
    if identifier in programm.functions:
     identifier_object = programm.functions[identifier]
@@ -1419,7 +1490,7 @@ def parse_unary_operator_stack(context):
    else:
     error("missing import "+identifier2,(context.line_position,offset-len(identifier),offset),inspect.getframeinfo(inspect.currentframe()).lineno)
   else:
-   qualified_name = function.namespace.name+"_"+identifier
+   qualified_name = function.namespace.name+programm.namespace_seperator+identifier
    if identifier in function.variables:
     identifier_object = function.variables[identifier]
    elif qualified_name in programm.functions:
@@ -1930,13 +2001,17 @@ def parse_namespace_delimiter(context):
  offset = context.offset
  name_start = offset
  name = parse_identifier_string(line[offset:])
- if not name:
-  error("expected name of namespace",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
+ #if not name:
+  #error("expected name of namespace",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
  if name in default_types:
   error("cannot use type as namespace",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
  if name in reserved_identifiers:
   error("cannot use reserved name "+name+" as namespace",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
- offset += len(name)
+ if name!="end":
+  offset += len(name)
+ else:
+  name=""
+  offset-=1
  name_end = offset
  if line[offset:]:
   if line[offset]!=" ":
@@ -2000,7 +2075,7 @@ def parse_object_declaration(context):
   error("trailing characters "+line[offset:]+" after object",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
  if context.namespace == None:
   error("object outside namespace",(context.line_position,0,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
- qualified_name = context.namespace.name+"_"+name
+ qualified_name = context.namespace.name+programm.namespace_seperator+name
  if qualified_name in programm.objects:
   error("duplicate declaration of object "+name,(context.line_position,0,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
  object = create_object()
@@ -2019,7 +2094,7 @@ def parse_function_declaration(context):
   error("missing function name",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
  if context.namespace == None:
   error("function outside namespace",(context.line_position,0,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
- qualified_name = context.namespace.name+"_"+name
+ qualified_name = context.namespace.name+programm.namespace_seperator+name
  if qualified_name in programm.functions:
   error("duplicate declaration of function "+name,(context.line_position,0,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
  function = create_function()
@@ -2096,7 +2171,7 @@ def parse(lines):
  for space in programm.namespaces.values():
   for space2 in space.imports:
    if space.imports[space2] not in programm.namespaces:
-    error("unknown namespace "+space.imports[space2],(space.import_positions[space2]),inspect.getframeinfo(inspect.currentframe()).lineno)
+    error("unknown namespace "+space.imports[space2],[space.import_positions[space2]],inspect.getframeinfo(inspect.currentframe()).lineno)
  for function in programm.functions.values():
   for parameter in function.parameters:
    if parameter.type.kind not in default_types:
@@ -2107,6 +2182,18 @@ def parse(lines):
   parse_object_body(object)
  for function in programm.functions.values():
   parse_function_body(function)
+ if programm.global_prefix:
+  for function in list(programm.functions):
+   rename_function(function,programm.global_prefix+function)
+  renames=[]
+  for object in programm.objects:
+   renames.append((object,programm.global_prefix+object))
+  rename_objects(renames)
+ for function in programm.functions.values():
+  if function.parameters:
+   if function.parameters[0].type.kind not in default_types:
+    programm.objects[function.parameters[0].type.kind].methods.append(function)
+ programm.done=True
  return programm
   
 def c_create_options():
@@ -2114,6 +2201,7 @@ def c_create_options():
  c_options.typedef = False
  c_options.precise_types = False
  c_options.preserve_field_order = False
+ c_options.spill_into_variables = False
  return c_options
  
 def c_create_context():
@@ -2154,19 +2242,11 @@ def c_generate_returntype(type,name,context):
   for parameter in type.returns:
    string+=type_to_string(parameter.type)
   if string not in context.returntypes:
-   first_try =True
-   while True:
-    if name and first_try:
-     identifier = name+"_t"
-    elif name:
-     identifier = name+"_t"+generate_identifier()
-    else:
-     identifier = "return_"+generate_identifier()
-    if identifier not in programm.objects and identifier not in programm.functions and identifier not in context.variables:
-     break
-    first_try=False
+   if name:
+    identifier = generate_global_name(name+"_t",c_reserved_identifiers)
+   else:
+    identifier = generate_global_name("return",c_reserved_identifiers)
    declaration_stack = []
-   identifier = programm.global_prefix+identifier
    return_type = identifier
    declaration = identifier+" {"
    for index,variable in enumerate(type.returns):
@@ -2198,12 +2278,14 @@ def c_translate_typename(type,name,context,not_pointer=False):
  output=""
  declarations=[]
  if type.kind !="fun":
-  if type.kind in default_types:
-   output+=context.c_type[type.kind]+" "
+  if type.kind in numeric_types and type.pointer and not type.nested:
+   output+="void"
+  elif type.kind in default_types:
+   output+=context.c_type[type.kind]
   else:
    if not context.options.typedef:
     output+="struct "
-   output+=programm.global_prefix+type.kind
+   output+=type.kind
   if not type.pointer and type.kind in numeric_types or not_pointer:
    if name:
     output+=" "+name
@@ -2274,7 +2356,7 @@ def c_transform_expression(destination,expression,context):
    code = [" if "+variable.name+"&0x"+format(sign_mask[operation.type.size],"x")+"!=0","  "+variable.name+"="+variable.name+"~+1"]
    preamble.extend(parse_code_body(code,context.function))
    i=0
-  elif operation.kind=="c" and not operation.type.pointer and (expression.components[operation.inputs[0]].type.kind in floating_point_types and operation.type.kind in integer_types or expression.components[operation.inputs[0]].type.kind in signed_integer_types and operation.type.kind in floating_point_types) and "transformed" not in operation.metadata:
+  elif operation.kind=="c" and not operation.type.pointer and (expression.components[operation.inputs[0]].type.kind in floating_point_types and operation.type.kind in integer_types or expression.components[operation.inputs[0]].type.kind in signed_integer_types and operation.type.kind in floating_point_types or expression.components[operation.inputs[0]].type.kind in signed_integer_types and operator.type.kind in signed_integer_types) and "transformed" not in operation.metadata:
    cast_expression,hole_position,expression = extract_expression(expression,i)
    cast_variable,cast_assignment,_,_ = cache_in_variable(cast_expression,len(cast_expression.components)-2,context.function,invalid_names=c_reserved_identifiers)
    preamble.append(cast_assignment)
@@ -2286,7 +2368,11 @@ def c_transform_expression(destination,expression,context):
    variable_expression.positions.append((0,0,0))
    expression = replace_expression(expression,hole_position,variable_expression)
    code = []
-   if operation.type.kind in integer_types:
+   if operation.type.kind in signed_integer_types and cast_variable.type.kind in signed_integer_types:
+    code.append(" "+destination_variable.name+"="+cast_variable.name+"("+operation.type.kind+")")
+    code.append(" if "+cast_variable.name+"&0x"+format(sign_mask[cast_variable.type.size],"x")+"!=0")
+    code.append("  "+destination_variable+"}|0x"+format(type_mask[operation.type.size]^type_mask[cast_variable.type.size],"x"))
+   elif operation.type.kind in integer_types:
     if operation.type.kind in signed_integer_types:
      code.append(" "+cast_variable.name+"="+cast_variable.name+"+"+str(s_max[operation.type.size]+1))
     code.append(" if "+cast_variable.name+"<=0")
@@ -2335,15 +2421,17 @@ def c_transform_expression(destination,expression,context):
    code =[]
    if operation.type.kind in signed_integer_types:
     sign_variable_name = generate_variable_name(context.function,invalid_names=c_reserved_identifiers)
-    if operation.kind=="%":
-     code.append(" "+sign_variable_name+"="+operand1_variable.name+"&0x"+format(sign_mask[operation.type.size],"x"))
-    else:
-     code.append(" "+sign_variable_name+"="+operand1_variable.name+"^"+operand2_variable.name+"&0x"+format(sign_mask[operation.type.size],"x"))
+    #if operation.kind=="%":
+     #code.append(" "+sign_variable_name+"="+operand1_variable.name+"&0x"+format(sign_mask[operation.type.size],"x"))
+    #else:
+    code.append(" "+sign_variable_name+"="+operand1_variable.name+"^"+operand2_variable.name+"&0x"+format(sign_mask[operation.type.size],"x"))
    code.append(" if "+operand2_variable.name+"!=0")
    if operation.type.kind in signed_integer_types:
     code.append("  "+operand1_variable.name+"="+operand1_variable.name+"+")
     code.append("  "+operand2_variable.name+"="+operand2_variable.name+"+")
-    code.append("  "+operand2_variable.name+"="+operand1_variable.name+operation.kind+operand2_variable.name+"|"+sign_variable_name)
+    code.append("  "+operand2_variable.name+"="+operand1_variable.name+operation.kind+operand2_variable.name)
+    code.append("  if "+sign_variable_name+"!=0")
+    code.append("   "+operand2_variable.name+"}-")
    else:
     code.append("  "+operand2_variable.name+"="+operand1_variable.name+operation.kind+operand2_variable.name)
    if operation.kind == "%":
@@ -2359,6 +2447,7 @@ def c_transform_expression(destination,expression,context):
  return destination,expression,preamble
   
 def c_translate_expression(expression,context):
+ variable_spill = context.options.spill_into_variables
  translated = []
  operators = expression.components
  for operator in operators:
@@ -2366,11 +2455,11 @@ def c_translate_expression(expression,context):
   output=""
   if operator.kind =="variable":
    c_expression.translation= operator.name
-   if operator.type.kind in integer_types:
+   if operator.type.kind in integer_types and variable_spill:
     c_expression.spill=True
   elif operator.kind =="function":
    if operator.name not in builtin_functions:
-    c_expression.translation= programm.global_prefix+operator.name
+    c_expression.translation=operator.name
    else:
     c_expression.translation= c_translate_builtin[operator.name]
   elif operator.kind=="constant":
@@ -2432,7 +2521,7 @@ def c_translate_expression(expression,context):
       c_expression.translation = "fmod("+input_translations[0]+","+input_translations[1]+")"
     else:
      c_expression.translation = input_translations[0]+c_translate_operator[operator.kind]+input_translations[1]
-   if operator.kind in c_spilling_operators and operator.type.kind not in floating_point_types:
+   if operator.kind in c_spilling_operators and operator.type.kind in integer_types:
     c_expression.spill=True
    if operator.kind=="-1" and operator.type.kind in signed_integer_types:
     c_expression.precedence = 4
@@ -2446,10 +2535,10 @@ def c_translate_expression(expression,context):
    for i in operator.inputs[1:]:
     parameter = translated[i]
     parameter_translation = parameter.translation
-    #if not context.options.precise_types and parameter.spill and expression.components[i].kind!="function":
-     #if parameter.precedence > c_operator_precedence["&"]:
-      #parameter_translation="("+parameter_translation+")"
-     #parameter_translation += "&0x"+format(type_mask[expression.components[i].type.size],"x")
+    if not context.options.precise_types and not variable_spill and parameter.spill and expression.components[i].kind!="function" and (not expression.components[i].type or expression.components[i].type.kind in numeric_types):
+     if parameter.precedence > c_operator_precedence["&"]:
+      parameter_translation="("+parameter_translation+")"
+     parameter_translation += "&0x"+format(type_mask[expression.components[i].type.size],"x")
     translation+=parameter_translation+","
    if translation[-1]==",":
     translation=translation[:-1]
@@ -2459,17 +2548,36 @@ def c_translate_expression(expression,context):
   elif operator.kind == "[":
    array = translated[operator.inputs[0]]
    index = translated[operator.inputs[1]]
-   c_expression.translation = array.translation+"["+index.translation+"]"
+   index_translation = index.translation
+   if not context.options.precise_types and index.spill:
+    if index.precedence > c_operator_precedence["&"]:
+     index_translation="("+index_translation+")"
+    index_translation += "&0x"+format(type_mask[expression.components[operator.inputs[1]].type.size],"x")
+    index.precedence = c_operator_precedence["&"]
+   input = expression.components[operator.inputs[0]]
+   if input.type.kind in numeric_types and not input.type.nested:
+    array_translation = array.translation
+    if array.precedence > c_operator_precedence["c"]:
+     array_translation = "("+array_translation+")"
+    c_expression.translation="(("+context.c_type[input.type.kind]+" *)"+array_translation+")["+index_translation+"]"
+   else:
+    c_expression.translation = array.translation+"["+index_translation+"]"
    c_expression.precedence=1
   elif operator.kind == ".":
    object = translated[operator.inputs[0]]
-   input = expression.components[operator.inputs[0]]
    c_expression.translation = object.translation+"->"+operator.inputs[1]
    c_expression.precedence=1
   elif operator.kind == "c":
    input = expression.components[operator.inputs[0]]
    input_translation = translated[operator.inputs[0]]
-   translation=input_translation.translation
+   if not context.options.precise_types and input_translation.spill:
+    translation = input_translation.translation
+    if input_translation.precedence > c_operator_precedence["&"]:
+     translation="("+translation+")"
+    translation += "&0x"+format(type_mask[input.type.size],"x")
+    input_translation.precedence = c_operator_precedence["&"]
+   else:
+    translation=input_translation.translation
    if input_translation.precedence > c_operator_precedence["c"]:
     translation = "("+translation+")"
    translation= "("+c_get_typename(operator.type,"",context)+")"+translation
@@ -2510,6 +2618,13 @@ def c_translate_expression(expression,context):
   else:
    assert False
   translated.append(c_expression)
+ if not variable_spill and translated[-1].spill:
+  translation = translated[-1].translation
+  if translated[-1].precedence > c_operator_precedence["&"]:
+   translation="("+translation+")"
+  translation += "&0x"+format(type_mask[expression.components[-1].type.size],"x")
+  translated[-1].precedence = c_operator_precedence["&"]
+  translated[-1].translation = translation
  return translated[-1].translation
  
 def c_translate_code(code,function,context):
@@ -2653,7 +2768,6 @@ def c_compute_object_alignment(object,context):
    alignment=max(alignment,context.object_alignments[variable.type.kind])
  context.object_alignments[object.name]=alignment
   
-#remember to disable strict aliasing
 def c_translate_programm(programm,c_options):
  convert_unsupported_operators({})
  replace_reserved_identifiers(c_reserved_identifiers)
@@ -2690,6 +2804,7 @@ def c_translate_programm(programm,c_options):
   assert not declarations
   output.append(object_typename+";")
  for function in programm.functions.values():
+  context.function=function
   function_declaration,declarations = c_translate_typename(function.type,function.name,context,not_pointer=True)
   output.extend(declarations)
   output.append(function_declaration+";")
@@ -2705,13 +2820,550 @@ def c_translate_programm(programm,c_options):
  return output
   
   
+  
+def python_create_options():
+ options = pynamespace()
+ options.indentation = " "
+ options.spill_into_variables = False
+ return options
+ 
+def python_create_context():
+ context = pynamespace()
+ context.options = None
+ return context
+ 
+def python_create_expression():
+ expression = pynamespace()
+ expression.translation = ""
+ expression.precedence=0
+ expression.spill = False
+ return expression
+ 
+ 
+python_translate_type = {"b1":"B","b2":"H","b4":"I","b8":"L","s1":"b","s2":"h","s4":"i","s8":"l","f1":"e","f2":"e","f4":"f","f8":"d","*":""}
+python_operator_precedence={"(":1,"[":1,".":1,"c":1,"~>":1,"~.":1,"~^":1,"~v":1,"+1":2,"-1":2,"~":2,"%":3,"/":3,"*":3,"+":4,"-":4,"<<":5,">>":5,"&":6,"^":7,"|":8,">":9,"<":9,">=":9,"<=":9,"=":9,"!=":9}
+python_translate_operator={".":".","~>":"round(","~.":"math.trunc(","~^":"math.ceil(","~v":"math.floor(","+1":"+","-1":"-","~":"~","%":"%","/":"/","*":"*","+":"+","-":"-",">>":">>","<<":"<<",">":">","<":"<",">=":">=","<=":"<=","=":"==","!=":"!=","&":"&","^":"^","|":"|"}
+python_spilling_operators={"*","+","-","<<","~"}
+python_spillover_operators={"(","[","c","%","/",">>",">","<",">=","<=","=","!="}
+python_translate_builtin={"delete":"del "}
+python_translate_control_flow={"loop":"while True:","if":"if","elif":"elif","else":"else:","break":"break","continue":"continue"}
+python_reserved_identifiers={"False","None","True","and","as","assert","async","await","break","class","continue","def","del","elif","else","except","finally","for","from","global","if","import","in","is","lambda","nonlocal","not","or","pass","raise","return","try","while","with","yield"}
+
+def python_mark(destination,expression,context):
+ if destination:
+  for op in destination.components:
+   if not context.operation or op.kind == context.operation:
+    op.metadata["transformed"]=True
+ if expression:
+  for op in expression.components:
+   if not context.operation or op.kind == context.operation:
+    op.metadata["transformed"]=True
+ return destination,expression,[]
+
+def python_transform_expression(destination,expression,context):
+ preamble=[]
+ i=0
+ while expression and i<len(expression.components):
+  operation = expression.components[i]
+  if operation.kind in {"/","%"}  and "transformed" not in operation.metadata:
+   divide_expression,hole_position,expression = extract_expression(expression,i)
+   operand1_variable,operand1_instruction,_,divide_expression = cache_in_variable(divide_expression,divide_expression.components[-1].inputs[0],context.function,invalid_names=python_reserved_identifiers)
+   preamble.append(operand1_instruction)
+   operand2_variable,operand2_instruction,_,divide_expression = cache_in_variable(divide_expression,divide_expression.components[-1].inputs[1],context.function,invalid_names=python_reserved_identifiers)
+   preamble.append(operand2_instruction)
+   variable_expression = create_linear_expression()
+   variable_expression.components.append(operand2_variable)
+   variable_expression.positions.append((0,0,0))
+   expression = replace_expression(expression,hole_position,variable_expression)
+   code =[]
+   if operation.type.kind in signed_integer_types:
+    sign_variable_name = generate_variable_name(context.function,invalid_names=python_reserved_identifiers)
+    code.append(" "+sign_variable_name+"="+operand1_variable.name+"^"+operand2_variable.name+"&0x"+format(sign_mask[operation.type.size],"x"))
+   code.append(" if "+operand2_variable.name+"!=0")
+   if operation.type.kind in signed_integer_types:
+    code.append("  "+operand1_variable.name+"="+operand1_variable.name+"+")
+    code.append("  "+operand2_variable.name+"="+operand2_variable.name+"+")
+    code.append("  "+operand2_variable.name+"="+operand1_variable.name+operation.kind+operand2_variable.name)
+    code.append("  if "+sign_variable_name+"!=0")
+    code.append("   "+operand2_variable.name+"}-")
+   else:
+    code.append("  "+operand2_variable.name+"="+operand1_variable.name+operation.kind+operand2_variable.name)
+   if operation.kind == "%":
+    code.append(" else")
+    code.append("  "+operand2_variable.name+"="+operand1_variable.name)
+   code2=parse_code_body(code,context.function)
+   context.operation = operation.kind
+   code3 = transform_code(code2,python_mark,context)
+   preamble.extend(code3)
+   i=0
+  else:
+   i+=1
+ return destination,expression,preamble
+  
+def python_allocate(type,amount):
+ if type.kind in numeric_types:
+  translation = amount.translation
+  if amount.precedence > python_operator_precedence["*"]:
+   translation = "("+translation+")"
+  return "memoryview(bytearray("+translation+"*"+str(type.size)+")).cast('"+python_translate_type[type.kind]+"')"
+ elif type.kind in default_types:
+  return "[None for i in range("+amount.translation+")]"
+ else:
+  if amount!=None:
+   return "["+type.kind+"() for i in range("+amount.translation+")]"
+  else:
+   return type.kind+"()"
+  
+def python_translate_expression(expression,context):
+ translated = []
+ operators = expression.components
+ for operator in operators:
+  expression = python_create_expression()
+  output=""
+  if operator.kind =="variable":
+   expression.translation= operator.name
+   if context.options.spill_into_variables and operator.type.kind in integer_types:
+    expression.spill=True
+   expression.precedence=0
+  elif operator.kind =="function":
+   if operator.name not in builtin_functions:
+    expression.translation=operator.name
+   else:
+    expression.translation= python_translate_builtin[operator.name]
+   expression.precedence=0
+  elif operator.kind=="constant":
+   expression.translation = str(operator.value)
+   expression.precedence=0
+  elif operator.kind=="object":
+   pass
+  elif operator.kind in python_translate_operator:
+   inputs = [translated[operator.inputs[0]]]
+   if operator.kind in binary_operators:
+    inputs.append(translated[operator.inputs[1]])
+   input_translations =[]
+   for i,input in enumerate(inputs):
+    translation = input.translation
+    if operator.kind =="<<" and i==1 or operator.kind==">>" and operator.type.kind in signed_integer_types and i==1:
+     if input.precedence > c_operator_precedence["&"]:
+      translation="("+translation+")"
+     translation += "&0x"+format(bitshift_mask[operator.type.size],"x")
+     input.precedence = c_operator_precedence["&"]
+    elif operator.kind in python_spillover_operators and input.spill:
+     if input.precedence > c_operator_precedence["&"]:
+      translation="("+translation+")"
+     translation += "&0x"+format(type_mask[operator.type.size],"x")
+     input.precedence = c_operator_precedence["&"]
+    if input.precedence > python_operator_precedence[operator.kind] or input.precedence==python_operator_precedence[operator.kind] and (i==1 or python_operator_precedence[operator.kind]==9):
+     translation="("+translation+")"
+    input_translations.append(translation)
+   if operator.kind ==".":
+    expression.translation = input_translations[0]+python_translate_operator[operator.kind]+operator.inputs[1]
+   elif operator.kind in unary_operators:
+    if operator.kind in {"~.","~^","~v"}:
+     expression.translation = python_translate_operator[operator.kind]+input_translations[0]+")"
+    elif operator.kind == "~>":
+     expression.translation = python_translate_operator[operator.kind]+input_translations[0]+",0)"
+    else:
+     expression.translation = python_translate_operator[operator.kind]+input_translations[0]
+   elif operator.kind in binary_operators:
+    if operator.kind =="/" and operator.type.kind in integer_types:
+     expression.translation = input_translations[0]+"//"+input_translations[1]
+    else:
+     expression.translation = input_translations[0]+python_translate_operator[operator.kind]+input_translations[1]
+   expression.precedence = python_operator_precedence[operator.kind]
+  elif operator.kind == "(":
+   input_function = translated[operator.inputs[0]]
+   translation = input_function.translation+"("
+   for i in operator.inputs[1:]:
+    parameter = translated[i]
+    parameter_translation = parameter.translation
+    translation+=parameter_translation+","
+   if translation[-1]==",":
+    translation=translation[:-1]
+   translation+=")"
+   expression.translation=translation
+   expression.precedence=python_operator_precedence["("]
+  elif operator.kind == "[":
+   array = translated[operator.inputs[0]]
+   index = translated[operator.inputs[1]]
+   expression.translation = array.translation+"["+index.translation+"]"
+   expression.precedence=python_operator_precedence["["]
+  elif operator.kind == ".":
+   object = translated[operator.inputs[0]]
+   expression.translation = object.translation+"."+operator.inputs[1]
+   expression.precedence=python_operator_precedence["."]
+  elif operator.kind == "c":
+   input = operators[operator.inputs[0]]
+   input_translation = translated[operator.inputs[0]]
+   input_types = {input.type.kind,operator.type.kind}
+   if operator.type.kind in numeric_types and not operator.type.pointer:
+    if input_types & signed_integer_types and input_types & unsigned_integer_types:
+     translation = input_translation.translation
+     if input_translation.precedence>python_operator_precedence["."]:
+      translation = "("+translation+")"
+     truncation = ""
+     if operator.type.size<input.type.size:
+      truncation="[:"+str(operator.type.size)+"]"
+     expression.translation = "int.from_bytes("+translation+".to_bytes("+str(input.type.size)+",byteorder='little',signed="+str(input.type.kind in signed_integer_types)+")"+truncation+",byteorder='little',signed="+str(operator.type.kind not in unsigned_integer_types and operator.type.size<=input.type.size)+")"
+     expression.precedence = 1
+    elif input.type.kind in integer_types and operator.type.kind in floating_point_types:
+     expression.translation = "float("+input_translation.translation+")"
+     expression.precedence = 1
+    elif input.type.kind in floating_point_types and operator.type.kind in integer_types:
+     if operator.type.kind in unsigned_integer_types:
+      mini = 0
+      maxi = b_max[operator.type.size]
+     else:
+      mini = s_min[operator.type.size]
+      maxi = s_max[operator.type.size]
+     expression.translation = "int(max("+str(mini)+",min("+str(maxi)+","+input_translation.translation+")))"
+    else:
+     expression.translation = translated[operator.inputs[0]].translation
+     expression.precedence = translated[operator.inputs[0]].precedence
+   elif operator.type.kind in numeric_types and operator.type.pointer:
+    input = translated[operator.inputs[0]]
+    expression.translation = input.translation+".cast('"+python_translate_type[operator.type.kind]+"')"
+    expression.precedence=1
+   else:
+    expression.translation = translated[operator.inputs[0]].translation
+    expression.precedence = translated[operator.inputs[0]].precedence
+  elif operator.kind == "allocation":
+   if operator.type.pointer:
+    expression.translation = python_allocate(operator.type,translated[operator.inputs[1]])
+   else:
+    expression.translation = python_allocate(operator.type,None)
+   expression.precedence=1
+  else:
+   assert False
+  translated.append(expression)
+ if not context.options.spill_into_variables and translated[-1].spill:
+  translation = translated[-1].translation
+  if translated[-1].precedence > python_operator_precedence["&"]:
+   translation="("+translation+")"
+  translation += "&0x"+format(type_mask[expression.components[-1].type.size],"x")
+  translated[-1].precedence = python_operator_precedence["&"]
+  translated[-1].translation = translation
+ return translated[-1].translation
+ 
+def python_translate_code(code,function,context):
+ indentation = context.options.indentation
+ body = []
+ for instruction in code:
+  output=""
+  if instruction.kind == "assignment" and not instruction.special:
+   #if instruction.new_variable:
+   output = python_translate_expression(instruction.destination,context)
+   output+="="
+   output+= python_translate_expression(instruction.expression,context)
+   body.append(output)
+  elif instruction.kind == "assignment":
+   if not instruction.destination:
+    output = python_translate_expression(instruction.expression,context)
+    body.append(output)
+   else:
+    if instruction.destination=="return":
+     source_expression = instruction.expression
+     function_type = function.type
+    else:
+     source_expression = instruction.destination
+     function_type = instruction.expression.components[-1].type
+    if instruction.destination!="return":
+     output2=python_translate_expression(instruction.expression,context)
+    for destination in source_expression:
+     if destination:
+      output += python_translate_expression(destination,context)+","
+     else:
+      output += "_," 
+    if output[-1]==",":
+     output = output[:-1]
+    if instruction.destination=="return":
+     body.append("return "+output)
+    else:
+     body.append(output+"="+output2)
+  elif instruction.kind in control_flow_identifiers:
+   output = python_translate_control_flow[instruction.kind]
+   if instruction.kind in {"if","elif"}:
+    output+=" "+python_translate_expression(instruction.condition,context)+":"
+   body.append(output)
+   if instruction.body:
+    body2 = python_translate_code(instruction.body,function,context)
+    for i in range(len(body2)):
+     body2[i]=indentation+body2[i]
+    body.extend(body2)
+  else:
+   assert False
+  print(output)
+ return body
+ 
+def python_translate_function(function,context):
+ indentation = context.options.indentation
+ body = []
+ context.function=function
+ function.body = transform_code(function.body,python_transform_expression,context)
+ output="def "+function.name+"("
+ for parameter in function.parameters:
+  output+=parameter.name
+  if parameter.value:
+   output+="="+str(parameter.value)
+  output+=","
+ if output[-1]==",":
+  output=output[:-1]
+ output+="):"
+ body.append(output)
+ #function.body = transform_code(function.body,transform_expression,context)
+ body2 = python_translate_code(function.body,function,context)
+ for i in range(len(body2)):
+  body2[i]=indentation+body2[i]
+ body.extend(body2)
+ return body
+  
+def python_translate_object(object,context):
+ indentation = context.options.indentation
+ output = []
+ output.append("class "+object.name+":")
+ output.append(indentation+"def __init__(self):")
+ for field in object.variables.values():
+  if not field.type.nested:
+   output.append(indentation+indentation+"self."+field.name+" = None")
+  else:
+   if field.type.length>0:
+    expression = python_create_expression()
+    expression.translation = str(field.type.length)
+    expression.precedence=1
+    output.append(indentation+indentation+"self."+field.name+" = "+python_allocate(field.type,expression))
+   else:
+    output.append(indentation+indentation+"self."+field.name+" = "+python_allocate(field.type,None))
+ for method in object.methods:
+  output2 = python_translate_function(method,context)
+  for i in range(len(output2)):
+   output2[i] = indentation+output2[i]
+  output.extend(output2)
+ return output
+  
+def python_translate_programm(programm,options):
+ convert_unsupported_operators({})
+ replace_reserved_identifiers(python_reserved_identifiers)
+ output = []
+ output.append("import math")
+ context = python_create_context()
+ context.options = options
+ for object in programm.objects.values():
+  output.extend(python_translate_object(object,context))
+ for function in programm.functions.values():
+  output.extend(python_translate_function(function,context))
+ return output
+  
+  
+"""
+generic translation skeleton
+  
+def create_options():
+ options = pynamespace()
+ return options
+ 
+def create_context():
+ context = pynamespace()
+ context.options = None
+ return context
+ 
+def create_expression():
+ expression = pynamespace()
+ expression.translation = ""
+ expression.precedence=0
+ return expression
+ 
+translate_type = {"b1":"","b2":"","b4":"","b8":"","s1":"","s2":"","s4":"","s8":"","f1":"","f2":"","f4":"","f8":"","*":""}
+operator_precedence={"(":1,"[":1,".":1,"c":1,"~>":1,"~.":1,"~^":1,"~v":1,"+1":2,"-1":2,"~":2,"c":2,"%":3,"/":3,"*":3,"+":4,"-":4,"<<":5,">>":5,">":6,"<":6,">=":6,"<=":6,"=":7,"!=":7,"&":8,"^":9,"|":10}
+translate_operator={"~>":"","~.":"","~^":"","~v":"","+1":"+","-1":"-","~":"~","%":"%","/":"/","*":"*","+":"+","-":"-",">>":">>","<<":"<<",">":">","<":"<",">=":">=","<=":"<=","=":"==","!=":"!=","&":"&","^":"^","|":"|"}
+translate_builtin={"delete":"free"}
+translate_control_flow={"loop":"","if":"","elif":"","else":"","break":"","continue":""}
+reserved_identifiers={}
+
+def translate_typename(type,name,context):
+ 
+
+def transform_expression(destination,expression,context):
+ preamble=[]
+ i=0
+ while expression and i<len(expression.components):
+  operation = expression.components[i]
+  if operation.kind == "":
+   i=0
+  else:
+   i+=1
+ return destination,expression,preamble
+  
+def translate_expression(expression,context):
+ translated = []
+ operators = expression.components
+ for operator in operators:
+  expression = create_expression()
+  output=""
+  if operator.kind =="variable":
+   expression.translation= operator.name
+  elif operator.kind =="function":
+   if operator.name not in builtin_functions:
+    expression.translation=operator.name
+   else:
+    expression.translation= translate_builtin[operator.name]
+  elif operator.kind=="constant":
+   
+  elif operator.kind=="object":
+   pass
+  elif operator.kind in translate_operator:
+   inputs = [translated[operator.inputs[0]]]
+   if operator.kind in binary_operators:
+    inputs.append(translated[operator.inputs[1]])
+   input_translations =[]
+   for i,input in enumerate(inputs):
+    translation = input.translation
+    if input.precedence > operator_precedence[operator.kind]:
+     translation="("+translation+")"
+    input_translations.append(translation)
+   if operator.kind in unary_operators:
+    expression.translation = translate_operator[operator.kind]+input_translations[0]
+   elif operator.kind in binary_operators:
+    expression.translation = input_translations[0]+translate_operator[operator.kind]+input_translations[1]
+   expression.precedence = operator_precedence[operator.kind]
+  elif operator.kind == "(":
+   input_function = translated[operator.inputs[0]]
+   translation = input_function.translation+"("
+   for i in operator.inputs[1:]:
+    parameter = translated[i]
+    parameter_translation = parameter.translation
+    translation+=parameter_translation+","
+   if translation[-1]==",":
+    translation=translation[:-1]
+   translation+=")"
+   expression.translation=translation
+   expression.precedence=operator_precedence["("]
+  elif operator.kind == "[":
+   array = translated[operator.inputs[0]]
+   index = translated[operator.inputs[1]]
+   expression.translation = array.translation+"["+index.translation+"]"
+   expression.precedence=operator_precedence["["]
+  elif operator.kind == ".":
+   object = translated[operator.inputs[0]]
+   expression.translation = object.translation+"."+operator.inputs[1]
+   expression.precedence=operator_precedence["."]
+  elif operator.kind == "c":
+   input = expression.components[operator.inputs[0]]
+   input_translation = translated[operator.inputs[0]]
+   translation=input_translation.translation
+   if input_translation.precedence > operator_precedence["c"]:
+    translation = "("+translation+")"
+   translation= "("+translate_typename(operator.type,"",context)+")"+translation
+   expression.translation = translation
+   expression.precedence = operator_precedence["c"]
+  elif operator.kind == "allocation":
+   
+  else:
+   assert False
+  translated.append(expression)
+ return translated[-1].translation
+ 
+def translate_code(code,function,context):
+ body = []
+ for instruction in code:
+  output=""
+  if instruction.kind == "assignment" and not instruction.special:
+   #if instruction.new_variable:
+   output = translate_expression(instruction.destination,context)
+   output+="="
+   output+= translate_expression(instruction.expression,context)
+   body.append(output)
+  elif instruction.kind == "assignment":
+   if not instruction.destination:
+    output = translate_expression(instruction.expression,context)
+    body.append(output)
+   else:
+    if instruction.destination=="return":
+     source_expression = instruction.expression
+     function_type = function.type
+    else:
+     source_expression = instruction.destination
+     function_type = instruction.expression.components[-1].type
+    if instruction.destination!="return":
+     output2=translate_expression(instruction.expression,context)
+    for i,destination in enumerate(source_expression):
+     if destination:
+      output += translate_expression(destination,context)+","
+     else:
+      output += "_," 
+    if output[-1]==",":
+     output = ouptput[:-1]
+    if instruction.destination=="return":
+     body.append("return "+output)
+    else:
+     body.append(output+"="+output2)
+  elif instruction.kind in control_flow_identifiers:
+   output = c_translate_control_flow[instruction.kind]
+   if instruction.kind in {"if","elif"}:
+    output+=translate_expression(instruction.condition,context)+"){"
+   body.append(output)
+   if instruction.body:
+    body2 = translate_code(instruction.body,function,context)
+    for i in range(len(body2)):
+     body2[i]=context.indentation+body2[i]
+    body.extend(body2)
+    if not instruction.next:
+     body.append("}")
+  else:
+   assert False
+  print(output)
+ return body
+ 
+def translate_function(function,context):
+ body = []
+ context.function=function
+ output+=""+function.name+"("
+ for parameter in function.parameters:
+  output+=parameter.name
+  if parameter.value:
+   output+="="+str(parameter.value)
+  output+=translate_typename(parameter.type)
+ output+="){"
+ body.append(output)
+ function.body = transform_code(function.body,transform_expression,context)
+ body2 = []
+ for variable in function.variables.values():
+  if variable.name not in function.parameter_names:
+   body2.append(variable.name+" "+translate_typename(variable.type))
+ body2.extend(translate_code(function.body,function,context))
+ for i in range(len(body2)):
+  body2[i]=context.indentation+body2[i]
+ body.extend(body2)
+ body.append("}")
+ return body
+  
+def translate_object(object,context):
+ output = []
+ output.append( object.name+"{")
+ for field in object.variables.values():
+  output.append(context.indentation+field.name+" "+translate_typename(field.type))
+ output.append("}")
+ return output
+  
+def translate_programm(programm,options):
+ convert_unsupported_operators({})
+ replace_reserved_identifiers(reserved_identifiers)
+ output = []
+ context = create_context()
+ for object in programm.objects.values():
+  output.extend(translate_object(object,context))
+ for function in programm.functions.values():
+  output.extend(translate_function(function,context))
+ return output
+"""  
+
+  
 source = sample_programm
 source_lines = source.split("\n")
 programm = parse(source_lines)
-options = c_create_options()
-translation = c_translate_programm(programm,options)
+options = python_create_options()
+translation = python_translate_programm(programm,options)
 for line in translation:
  print(line)
-with open("test.c","w") as f:
+with open("test.py","w") as f:
  for line in translation:
   f.write(line+"\n")
