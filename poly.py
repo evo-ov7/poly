@@ -1,6 +1,7 @@
-import sys,copy,pprint,inspect,traceback
+import sys,copy,pprint,inspect,traceback,os
 import types as ttttttt
 pynamespace = ttttttt.SimpleNamespace
+debug = False
 sample_programm = """
 //blash
 namespace
@@ -210,9 +211,10 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 #reserved name avoidance
 #support empty namespace
 #c add missing sign-extension when casting
-#done ^ todo v
 #mark nested types as constant and prevent casting them
+#done ^ todo v
 #constant optimization
+#inlining
 #method syntax
 #print types correctly in error messages
 #figure out how to handle array length
@@ -226,8 +228,6 @@ bitshift_mask = [None,0x7,0xf,None,0x1f,None,None,None,0x3f]
 #atomics
 #c optimize spillage
 #pointer arithmetic? / c void*
-
- 
  
 def create_programm():
  programm = pynamespace()
@@ -239,6 +239,7 @@ def create_programm():
  programm.done =False
  programm.global_prefix = ""
  programm.namespace_seperator="_"
+ programm.indentation = "  "
  programm.next_identifier =0
  return programm
  
@@ -263,6 +264,7 @@ def create_function():
  function.type = None
  function.inputs = []
  function.value = None
+ function.inline = False
  function.metadata = {}
  return function
  
@@ -286,6 +288,7 @@ def create_variable():
  variable.name = ""
  variable.type = None
  variable.value = None
+ variable.default = None
  variable.inputs = []
  variable.metadata = {}
  return variable
@@ -304,7 +307,6 @@ def create_assignment():
  assignment.kind = "assignment"
  assignment.destination = None
  assignment.expression = None
- assignment.new_variable = False
  assignment.special = False
  return assignment
  
@@ -345,7 +347,8 @@ def create_control_flow():
  return flow
  
 def warning(message,position,lineno):
- traceback.print_stack()
+ if debug:
+  traceback.print_stack()
  if len(position) == 1:
   position = (position[0],0,len(source_lines[position[0]]))
  line,start,end = position
@@ -579,7 +582,6 @@ def replace_expression(expression,position,replacement_expression):
   
 def cache_in_variable(expression,position,function,invalid_names=set(),name_prefix=""):
  assignment = create_assignment()
- assignment.new_variable=True
  variable = generate_variable(expression.components[position].type,function,invalid_names,name_prefix)
  variable_expression = create_linear_expression()
  variable_expression.components.append(variable)
@@ -588,6 +590,12 @@ def cache_in_variable(expression,position,function,invalid_names=set(),name_pref
  assignment.destination=variable_expression
  assignment.expression,position,old_expression = extract_expression(expression,position)
  return variable,assignment,position,old_expression
+ 
+def expression_can_cause_side_effects(expression):
+ for operation in expression.components:
+  if operation.kind == "(":
+   return True#more sophisticated analysis possible, but only if we don't add global variables
+ return False
 
 def rename_variable(old_name,new_name,function):
  assert check_variable_name(new_name,function)
@@ -657,10 +665,84 @@ def replace_reserved_identifiers(reserved_identifiers):
     del object.variables[old_name]
  rename_fields2(type_translations)
  
+def transform_inline_function(destination,expression2,context):
+ preamble=[]
+ for i in range(2):
+  expression = destination
+  if i==1:
+   expression = expression2
+  if expression:
+   for i,operation in enumerate(expression.components):
+    if operation.kind=="(":
+     input = expression.components[operation.inputs[0]]
+     if input.kind == "function":
+      function = input
+     elif input.value:
+      function = input.value
+     else:
+      continue
+     if function.inline:
+      function2 = copy.deepcopy(function)
+      invalid_names = list(context.function.variables)
+      for variable in function2.variables.values():
+       if variable.name in context.function.variables:
+        rename_variable(variable.name,generate_variable_name(function2,invalid_names,variable.name),function2)
+      function_call,hole_position,expression = extract_expression(expression,i)
+      parameter_expressions = []
+      parameter_count = len(function_call.components[-1].inputs)-1
+      for i in range(parameter_count):
+       parameter_location = function_call.components[-1].inputs[i+1]
+       parameter_expression,_,function_call = extract_expression(function_call,parameter_location)
+       parameter_expressions.append(parameter_expression)
+      assert parameter_count == len(function2.parameters)
+      for i,variable in enumerate(function2.parameters.values()):
+       variable_expression = create_linear_expression()
+       variable_expression.components.append(variable)
+       variable_expression.positions.append([0])
+       assignment = create_assignment()
+       assignment.destination = variable_expression
+       assignment.expression = parameter_expressions[i]
+       preamble.append(assignment)  
+      if len(function2.returns)==1 and len(expression.components)>1:
+       return_variable = generate_variable(function2.returns[0].type,function2,invalid_names)
+       variable_expression = create_linear_expression()
+       variable_expression.components.append(return_variable)
+       variable_expression.positions.append([0])
+       replace_expression(expression,hole_position,variable_expression)
+       context.return_expressions = [variable_expression]
+      else:
+       expression=None
+      preamble.extend(transform_inline_function_body(function2.body,context))
+ return destination,expression2,preamble
+ 
+def transform_inline_instruction(instruction,transformer,context):
+ declarations=[]
+ if instruction.kind=="assignment" and (not instruction.special or not instruction.destination):
+  instruction.destination,instruction.expression,declaration = transformer(instruction.destination,instruction.expression,context)
+  declarations.extend(declaration)
+ elif instruction.kind=="assignment" and instruction.special:
+  if instruction.destination=="return":
+   for i,_ in enumerate(instruction.expression):
+    _,instruction.expression[i],declaration = transformer(None,instruction.expression[i],context)
+    declarations.extend(declaration)
+  else:
+   context.return_expressions = []
+   if instruction.destination:
+    for i,_ in enumerate(instruction.destination):
+     instruction.destination[i],_,declaration = transformer(instruction.destination[i],None,context)
+     declarations.extend(declaration)
+     context.return_expressions.append(instruction.destination[i])
+   _,instruction.expression,declaration = transformer(None,instruction.expression,context)
+   declarations.extend(declaration)
+   del context.return_expressions
+   instruction = None
+ else:
+  assert instruction.kind in control_flow_identifiers
+ return instruction,declarations
+ 
 def transform_instruction(instruction,transformer,context):
  declarations=[]
  if instruction.kind=="assignment" and (not instruction.special or not instruction.destination):
-  #if instruction.kind=="assignment" and not instruction.new_variable:
   instruction.destination,instruction.expression,declaration = transformer(instruction.destination,instruction.expression,context)
   declarations.extend(declaration)
  elif instruction.kind=="assignment" and instruction.special:
@@ -676,19 +758,22 @@ def transform_instruction(instruction,transformer,context):
     declarations.extend(declaration)
  else:
   assert instruction.kind in control_flow_identifiers
- return declarations
+ return instruction,declarations
  
-def transform_code(code,transformer,context):
+def transform_code(code,expression_transformer,context,instruction_transformer=transform_instruction):
  i=0
  while i < len(code):
   instruction = code[i]
-  output =transform_instruction(instruction,transformer,context)
-  if output:
-   code = code[:i]+output+code[i:]
+  code[i],declaration =instruction_transformer(instruction,expression_transformer,context)
+  if declaration:
+   if not code[i]:
+    del code[i]
+   code = code[:i]+declaration+code[i:]
   else:
-   if instruction.kind in control_flow_identifiers and instruction.body:
-    instruction.body = transform_code(instruction.body,transformer,context)
    i+=1
+  if instruction.kind in control_flow_identifiers and instruction.body:
+   instruction.body = transform_code(instruction.body,expression_transformer,context,instruction_transformer)
+   
  return code
 
 def cache_binary_operator(expression,operator_index,context,invalid_names=set()):
@@ -1168,9 +1253,9 @@ def parse_function_signature_parameters(parameters,positions,context):
    intersection = type_intersection(constant.type,parameter_type)
    if not intersection:
     error("constant type "+constant.type.kind+" incompatible with parameter type "+parameter_type.kind,(context.line_position,offset,offset+len(parameter)),inspect.getframeinfo(inspect.currentframe()).lineno)
-   parameter_variable.value = constant.value
+   parameter_variable.default = constant.value
    if intersection.kind in integer_types:
-    parameter_variable.value = int(parameter_variable.value) 
+    parameter_variable.default = int(parameter_variable.default) 
   returns.append(parameter_variable)
  return returns
  
@@ -1204,7 +1289,7 @@ def parse_function_signature(context,names_required=True):
   parameters,positions = parse_function_signature_components(context)
   returns = parse_function_signature_parameters(parameters,positions,context)
   for i,input in enumerate(returns):
-   if input.value:
+   if input.default:
     error("default return value not allowed",(context.line_position,positions[i],positions[i]+len(parameters[i])),inspect.getframeinfo(inspect.currentframe()).lineno)
    if input.name:
     return_names[input.name]=input
@@ -1363,6 +1448,10 @@ def parse_unary_operator(operator,context):
     if line[offset+len(target_type.string)]!=")":
      error("trailing characters after type",(context.line_position,offset+len(target_type.string),offset+len(target_type.string)+1),inspect.getframeinfo(inspect.currentframe()).lineno)
     if target_type.kind!="*" and input.type.kind!="*":
+     if target_type.nested:
+      error("cannot convert into nested type "+target_type.string,(context.line_position,offset,offset+len(target_type.string)),inspect.getframeinfo(inspect.currentframe()).lineno)
+     if input.type.nested:
+      error("cannot convert nested type "+input.type.string,context.expression.positions[-1],inspect.getframeinfo(inspect.currentframe()).lineno)
      if (target_type.kind in numeric_compatible_types) != (input.type.kind in numeric_compatible_types):
       error("cannot convert type "+input.type.string+" into "+target_type.string,(context.line_position,offset,offset+len(target_type.string)),inspect.getframeinfo(inspect.currentframe()).lineno)
      if target_type.pointer != input.type.pointer:
@@ -1437,11 +1526,11 @@ def parse_unary_operator(operator,context):
      for i in range(len(function.parameters)):
       if operation.inputs[i+1]==None:
        parameter = function.parameters[i]
-       if not parameter.value:
+       if not parameter.default:
         error("missing required parameter "+str(i),(context.line_position,start,positions[-1]+len(subexpressions[-1])+1),inspect.getframeinfo(inspect.currentframe()).lineno)
        constant = create_constant()
        constant.type = copy.deepcopy(parameter.type)
-       constant.value = parameter.value
+       constant.value = parameter.default
        context.expression.components.append(constant)
        context.expression.positions.append(context.expression.positions[operation.inputs[0]])
        operation.inputs[i+1]= len(context.expression.components)-1
@@ -1687,7 +1776,8 @@ def parse_function_body(function):
  dummy.body =[]
  control_flow_stack = [None,dummy]
  for body_index,(line,line_position) in enumerate(body_lines):
-  print(line)
+  if debug:
+   print(line)
   context.line = line
   context.line_position = line_position
   indent = len(line)-len(line.lstrip(" "))
@@ -1795,7 +1885,6 @@ def parse_function_body(function):
   comma = skip_nested("(",")",",",context)
   if not comma and line[offset]=="=" and identifier not in function.variables:
    #new variable creation
-   assignment.new_variable=True
    context.offset = offset+1
    expression = parse_expression(context)
    assignment.expression = expression
@@ -1830,10 +1919,8 @@ def parse_function_body(function):
    positionals =True
    return_count=0
    assignment.destination = []
-   assignment.new_variable=[]
    for i in range(len(compound_function.outputs)):
     assignment.destination.append(None)
-    assignment.new_variable.append(False)
    while comma<expression_seperator:
     context.offset = offset
     comma = skip_nested("(",")",",",context)
@@ -1871,12 +1958,13 @@ def parse_function_body(function):
       variable.value = compound_function.outputs[return_position].value
       function.variables[variable.name]=variable
       assignment.destination[return_position] = variable_expression
-      assignment.new_variable[return_position] = True
      else:
       context.expression = create_linear_expression()
       parse_unary_operator_stack(context)
       if context.expression.components[-1].type.kind != compound_function.outputs[return_position].type.kind:
        error("trying to assign "+compound_function.outputs[return_position].type.kind+" to "+context.expression.components[-1].type.kind,(line_position,offset,comma),inspect.getframeinfo(inspect.currentframe()).lineno)
+      if context.expression.components[-1].type.nested:
+       error("nested references are constant and cannot be assigned to",(line_position,offset,comma),inspect.getframeinfo(inspect.currentframe()).lineno)
       assignment.destination[return_position] = context.expression
       propagate_types(context.expression,context)
     offset = comma+1
@@ -1898,6 +1986,8 @@ def parse_function_body(function):
    continue
   else:
    #general case
+   if context.expression.components[-1].type.nested:
+    error("nested references are constant and cannot be assigned to",(line_position,indent,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
    offset = skip_space(line,offset)
    propagate_types(context.expression,context)
    if line[offset]=="=":
@@ -2089,7 +2179,12 @@ def parse_object_declaration(context):
 def parse_function_declaration(context):
  line = context.line
  offset = context.offset
+ function = create_function()
  name = parse_identifier_string(line[offset:])
+ if name == "inline" and line[offset+len(name)]==" ":
+  function.inline=True
+  offset = skip_space(line,offset+len(name))
+  name = parse_identifier_string(line[offset:])
  if not name:
   error("missing function name",(context.line_position,offset,offset+1),inspect.getframeinfo(inspect.currentframe()).lineno)
  if context.namespace == None:
@@ -2097,7 +2192,6 @@ def parse_function_declaration(context):
  qualified_name = context.namespace.name+programm.namespace_seperator+name
  if qualified_name in programm.functions:
   error("duplicate declaration of function "+name,(context.line_position,0,len(line)),inspect.getframeinfo(inspect.currentframe()).lineno)
- function = create_function()
  function.name = qualified_name
  function.namespace = context.namespace
  function.type = create_type()
@@ -2115,10 +2209,7 @@ def parse_function_declaration(context):
  function.type.returns = copy.deepcopy(function.returns)
  programm.functions[qualified_name]= function
  for parameter in function.parameters:
-  variable = copy.deepcopy(parameter)
-  if variable.value:
-   variable.value=None
-  function.variables[variable.name]=variable
+  function.variables[parameter.name]=parameter
  return function
  
 def parse_top_level(context):
@@ -2144,8 +2235,7 @@ def parse_top_level(context):
  return body
   
 def parse(lines):
- global programm 
- programm = create_programm()
+ global programm
  top_level = None
  context = pynamespace()
  context.namespace = None
@@ -2632,11 +2722,7 @@ def c_translate_code(code,function,context):
  for instruction in code:
   output=""
   if instruction.kind == "assignment" and not instruction.special and (instruction.expression.components[-1].type.kind!="fun" or  instruction.expression.components[-1].returns[0].type.kind!="fun"):
-   #if not instruction.new_variable:
    output = c_translate_expression(instruction.destination,context)
-   #else:
-    #variable = instruction.destination.components[-1]
-    #output = c_get_typename(variable.type,variable.name,context)
    output+="="
    output+= c_translate_expression(instruction.expression,context)
    body.append(output+";")
@@ -2665,11 +2751,7 @@ def c_translate_code(code,function,context):
     body.append(output+";")
     for i,destination in enumerate(source_expression):
      if destination:
-      #if not instruction.new_variable or not instruction.new_variable[i]:
       output = c_translate_expression(destination,context)
-      #else:
-       #variable = destination.components[-1]
-       #output = c_get_typename(variable.type,variable.name,context)
       if instruction.destination=="return":
        output = return_variable_name+".r"+str(i)+"="+output
       else:
@@ -2691,7 +2773,8 @@ def c_translate_code(code,function,context):
      body.append("}")
   else:
    assert False
-  print(output)
+  if debug:
+   print(output)
  return body
  
 def c_translate_function(function,context):
@@ -2819,7 +2902,7 @@ def c_translate_programm(programm,c_options):
   output.extend(c_translate_function(function,context))
  return output
   
-  
+ 
   
 def python_create_options():
  options = pynamespace()
@@ -3051,7 +3134,6 @@ def python_translate_code(code,function,context):
  for instruction in code:
   output=""
   if instruction.kind == "assignment" and not instruction.special:
-   #if instruction.new_variable:
    output = python_translate_expression(instruction.destination,context)
    output+="="
    output+= python_translate_expression(instruction.expression,context)
@@ -3092,7 +3174,8 @@ def python_translate_code(code,function,context):
     body.extend(body2)
   else:
    assert False
-  print(output)
+  if debug:
+   print(output)
  return body
  
 def python_translate_function(function,context):
@@ -3103,8 +3186,8 @@ def python_translate_function(function,context):
  output="def "+function.name+"("
  for parameter in function.parameters:
   output+=parameter.name
-  if parameter.value:
-   output+="="+str(parameter.value)
+  if parameter.default:
+   output+="="+str(parameter.default)
   output+=","
  if output[-1]==",":
   output=output[:-1]
@@ -3319,8 +3402,8 @@ def translate_function(function,context):
  output+=""+function.name+"("
  for parameter in function.parameters:
   output+=parameter.name
-  if parameter.value:
-   output+="="+str(parameter.value)
+  if parameter.default:
+   output+="="+str(parameter.default)
   output+=translate_typename(parameter.type)
  output+="){"
  body.append(output)
@@ -3357,13 +3440,80 @@ def translate_programm(programm,options):
 """  
 
   
-source = sample_programm
+command_line = sys.argv
+programm = create_programm()
+i=1
+while i<len(command_line) and command_line[i][0]=="-":
+ if command_line[i][:13]=="-indentation=":
+  if len(command_line[i])<14:
+   print("missing indentation amount")
+   sys.exit(1)
+  programm.indentation = " "*int(command_line[i][13:])
+ elif command_line[i][:6]=="-debug":
+  debug=True
+ elif command_line[i][:21]=="-namespace_separator=":
+  programm.namespace_seperator=command_line[i][21:]
+ elif command_line[i][:8]=="-prefix=":
+  programm.global_prefix = command_line[i][8:]
+ else:
+  print("unknown option "+command_line[i])
+  sys.exit(1)
+ i+=1
+
+if len(command_line)<=i:
+ print("no input file")
+ sys.exit(1)
+input_file = command_line[i]
+with open(input_file,"r") as f:
+ source = f.read()
+if "." in input_file:
+ input_file = input_file.rsplit(".",1)[0]
 source_lines = source.split("\n")
 programm = parse(source_lines)
-options = python_create_options()
-translation = python_translate_programm(programm,options)
-for line in translation:
- print(line)
-with open("test.py","w") as f:
- for line in translation:
-  f.write(line+"\n")
+i+=1
+if len(command_line)<=i:
+ print("no backend selected")
+ sys.exit(1)
+if command_line[i] in {"C","c"}:
+ backend = "c"
+ c_options = c_create_options()
+ i+=1
+ while i<len(command_line):
+  if command_line[i][:8]=="-typedef":
+   c_options.typedef=True
+  elif command_line[i][:15]=="-exact_integers":
+   c_options.precise_types=True
+  elif command_line[i][:17]=="-same_field_order":
+   c_options.preserve_field_order=True
+  elif command_line[i][:23]=="-allow_visible_overflow":
+   c_options.spill_into_variables=True
+  else:
+   print("unknown c option "+command_line[i])
+   sys.exit(1)
+ translation = c_translate_programm(programm,c_options)
+ output_name = input_file+".c"
+ if os.path.isfile(output_name):
+  print(output_name+" already exists, not overwriting")
+ with open(output_name,"w") as f:
+  for line in translation:
+   f.write(line+"\n")
+elif command_line[i] in {"Python","python"}:
+ backend = "python"
+ python_options = python_create_options()
+ i+=1
+ while i<len(command_line):
+  if command_line[i][:23]=="-allow_visible_overflow":
+   python_options.spill_into_variables=True
+  else:
+   print("unknown python option "+command_line[i])
+   sys.exit(1)
+ translation = python_translate_programm(programm,python_options)
+ output_name = input_file+".py"
+ if os.path.isfile(output_name):
+  print(output_name+" already exists, not overwriting")
+ with open(output_name,"w") as f:
+  for line in translation:
+   f.write(line+"\n")
+else:
+ print("unknown backend "+command_line[i])
+ sys.exit(1)

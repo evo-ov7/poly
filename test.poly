@@ -1,0 +1,85 @@
+//blash
+namespace
+object void
+ test b4
+ 
+object test2
+ test2 void
+namespace end
+
+namespace really_long_name
+object my_obj
+ bit b1
+function add(x f2,y s8)->(b4,f1)
+ return 0xa2,11.037
+namespace really_long_name end
+
+namespace main
+import really_long_name as imp
+
+
+
+object nest2
+ for my_obj
+
+object nest
+ content s8
+ nested nest2*0
+
+object my_obj
+ value b4
+ composite_array b4*8
+ leaf my_obj
+ nested nest*0
+ imported_object imp.my_obj
+ 
+function nester(nested fun(nested2 fun*(b4*)->(fun(b4)->()),void fun),nested3 fun(my_obj)->(fun))->(func fun(b1,b2)->())
+ return add(fun(b1,b2)->())
+ 
+function add(x b4,y b4)->(b4,f1)
+ sum = x+y
+ return sum,1.0
+ 
+function add2(x=1 b4,y=2 b4)->(sum b4,sammy f1)
+ sum = x + y
+ return sum,0.
+ 
+function id(x b2)->(x b2)
+ return x
+ 
+function main
+ func = add
+ byte = 0b
+ short = 0s
+ int = 0i
+ int = 0b010101010101+..0
+ int = 4 >>> 12
+ loop
+  cool = 4s
+  if int>2
+ break
+  elif func!=add
+   cool} + 2*6-3
+ long = 0l
+ float = 0f
+ signed = 1i-
+ double = 0d
+ half = 0h
+ tiny = 0q
+ array = b4*(20)
+ array[id(1)+4] = 1
+ //array2 = array+4
+ obj = my_obj()
+ obj.value = 7
+ obj.leaf = my_obj()
+ obj.nested.content = 32609532
+ object2 = obj.leaf
+ delete(array)
+ delete(object2)
+ delete(obj)
+ num1,num2 = add(1,1)
+ num1,num2 = imp.add(1,1)
+ array[2]=sum,y=sammy = add2(x= int,y= 2)
+ x=sum,_ = add2(y= 1)
+ add(1,3)
+namespace main end
