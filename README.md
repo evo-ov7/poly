@@ -1,7 +1,7 @@
 # Poly WIP
 
 Poly is a very simple programming language designed around easy portability to any platform.
-As such it doesn't contain any I/O functionality but focuses on a simple yet powerfull semantic core, allowing the same codebase to be reliably deployed accross various platforms.
+As such it doesn't contain any I/O functionality but focuses on a simple yet powerful semantic core, allowing the same codebase to be reliably deployed across various platforms.
 
 The transpiller is written in Python 3, synopsis: `poly.py [-options...] inputfile backend [-backend_options...]`
 
@@ -9,33 +9,33 @@ Currently implemented backends: C99+, Python 2.7+
 
 ### Options
 
-`-indentation=n` (default:2) indent code blocks by `n` spaces
+`-indentation=n` (default:2) Indent code blocks by `n` spaces
 
-`-namespace_separator=string` (default:_) separate the namespace from names using this `string`
+`-namespace_separator=string` (default:_) Separate the namespace from names using this `string`
 
-`-prefix=string` (default:) prefix all identifiers with `string`
+`-prefix=string` (default:) Prefix all identifiers with `string`
 
-`-debug` produce debug output
+`-debug` Produce debug output
 
 ### C Backend Options
 
-`-typedef`  object types can be referred to by name, instead of having to use the "struct" prefix
+`-typedef`  Object types can be referred to by name, instead of having to use the "struct" prefix
 
-`-exact_integers`  the created output will use exact-bitwidth integer types. note that these are not available on every C compiler
+`-exact_integers`  The created output will use exact-bitwidth integer types. note that these are not available on every C compiler
 
-`-same_field_order`  object fields will appear in the same order as in the source, instead of using an optimized layout based on the type sizes
+`-same_field_order`  Object fields will appear in the same order as in the source, instead of using an optimized layout based on the type sizes
 
-`-allow_visible_overflow`  if exact-bitwidth integer types are unavailable on the C compiler then this option allows integer variables returned by functions and passed into functions to contain garbage data in the excess bits
+`-allow_visible_overflow`  If exact-bitwidth integer types are unavailable on the C compiler then this option allows integer variables returned by functions and passed into functions to contain garbage data in the excess bits
 
 ### Python Backend Options
 
-`-allow_visible_overflow` allows integer variables returned by functions and passed into functions to contain garbage data in the excess bits
+`-allow_visible_overflow` Allows integer variables returned by functions and passed into functions to contain garbage data in the excess bits
 
 # Poly Language Specification
 
-Poly is still under development, so the specification is subject to change.
+Poly is still under development, so the specification is subject to change. For some examples check the test file test.poly.
 
-A Poly programm consists of objects and functions. Objects are a named collection of fields while functions are a sequence of statements containing operators and variables.
+A Poly program consists of objects and functions. Objects are a named collection of fields while functions are a sequence of statements containing operators and variables.
 
 ## Type System
 
@@ -49,7 +49,7 @@ A byte is defined as 8 bits. All numeric types come in 4 sizes: 1,2,4,8 bytes co
 
 `s1` `s2` `s4` `s8` integers with the specified number of bytes, negative numbers are represented using [two's complement](https://en.wikipedia.org/wiki/Two%27s_complement)
 
-`f1` `f2` `f4` `f8` floating point numbers with the specified number of bytes. These tyes do not have a defined binary representation or precision besides bigger types possibly having higher numeric precision.
+`f1` `f2` `f4` `f8` floating point numbers with the specified number of bytes. These types do not have a defined binary representation or precision besides bigger types possibly having higher numeric precision.
 
 ### Reference Types
 
@@ -101,7 +101,7 @@ Every other top-level declaration must occur between two matching namespace deli
 
 ### Object Declaration
 
-`object name` - Declare the start of the definition of object `name`. The definitons for the object's fields will be on the following lines.
+`object name` - Declare the start of the definition of object `name`. The definitions for the object's fields will be on the following lines.
 
 ### Function Declaration
 
@@ -123,44 +123,44 @@ All operators in Poly only operate on operands of the same type, unless stated o
 
 ### Unary Operators
 
-`+` - Turns its integer or floating point operand positive
-`-` - Changes the sign of its integer or floating point operand
-`~` - Rounds to nearest integer if the operand is floating point, performs bitwise not otherwise
-`~.` - Rounds its floating point operand towards zero (truncates the fractional part)
-`~^` - Rounds its floating point operand towards infinity
-`~v` - Rounds its floating point operand towards negative infinity
-`+#1` - Counts the number of 1 bits in its integer/number operand
-`+0..` - Counts the number of leading 0 bits in its integer/number operand
-`+..0` - Counts the number of trailing 0 bits in its integer/number operand
+* `+` - Turns its integer or floating point operand positive
+* `-` - Changes the sign of its integer or floating point operand
+* `~` - Rounds to nearest integer if the operand is floating point, performs bitwise not otherwise
+* `~.` - Rounds its floating point operand towards zero (truncates the fractional part)
+* `~^` - Rounds its floating point operand towards infinity
+* `~v` - Rounds its floating point operand towards negative infinity
+* `+#1` - Counts the number of 1 bits in its integer/number operand
+* `+0..` - Counts the number of leading 0 bits in its integer/number operand
+* `+..0` - Counts the number of trailing 0 bits in its integer/number operand
 
 ### Access Operators
 
 The operands of all access operators don't have to be of the same type
-`.` - Used to access the field of a value of type object, like `variable.field`
-`[]` - Used to index into a value of type array, like `array[index]`
-`()` - Used to call a value of type function, like `function(param1,param2)`
-`()` - Used to cast the type of a value, like `variable(type)`
+* `.` - Used to access the field of a value of type object, like `variable.field`
+* `[]` - Used to index into a value of type array, like `array[index]`
+* `()` - Used to call a value of type function, like `function(param1,param2)`
+* `()` - Used to cast the type of a value, like `variable(type)`
 
 ### Binary Operators
 
-`+` - Performs addition
-`-` - Performs subtraction
-`*` - Performs multiplication
-`/` - Performs division on floating point numbers (sign is undefined). Performs integer division on integers/numbers with the result being rounded towards zero.
-`%` - Computes the remainder of division for floating point numbers (sign is undefined). Computes the remainder of integer division for integers/numbers. The sign of the remainder is the same as the sign of the quotient
-`^` - Performs bitwise exclusive or
-`|` - Performs bitwise or
-`&` - Performs bitwise and
-`<<` - Performs bitwise left shift. Both operands have to be integers/numbers, but they don't have to be of the same type
-`>>` - Performs bitwise right shift for number operands and arithmetic right shift for integers. Both operands have to be integers/numbers, but they don't have to be of the same type.
-`>>>` - Performs bitwise right rotation. Both operands have to be integers/numbers, but they don't have to be of the same type
-`<<<` - Performs bitwise left rotation. Both operands have to be integers/numbers, but they don't have to be of the same type
-`>` - Checks if numeric operand 1 is greater than numeric operand 2
-`<` - Checks if numeric operand 1 is lesser than numeric operand 2
-`>=` - Checks if numeric operand 1 is greater than or equal to numeric operand 2
-`<=` - Checks if numeric operand 1 is lesser than or equal to numeric operand 2
-`=` - Checks if operand 1 and 2 have the same value
-`!=` - Checks if operand 1 and 2 don't have the same value
+* `+` - Performs addition
+* `-` - Performs subtraction
+* `*` - Performs multiplication
+* `/` - Performs division on floating point numbers (sign is undefined). Performs integer division on integers/numbers with the result being rounded towards zero.
+* `%` - Computes the remainder of division for floating point numbers (sign is undefined). Computes the remainder of integer division for integers/numbers. The sign of the remainder is the same as the sign of the quotient
+* `^` - Performs bitwise exclusive or
+* `|` - Performs bitwise or
+* `&` - Performs bitwise and
+* `<<` - Performs bitwise left shift. Both operands have to be integers/numbers, but they don't have to be of the same type
+* `>>` - Performs bitwise right shift for number operands and arithmetic right shift for integers. Both operands have to be integers/numbers, but they don't have to be of the same type.
+* `>>>` - Performs bitwise right rotation. Both operands have to be integers/numbers, but they don't have to be of the same type
+* `<<<` - Performs bitwise left rotation. Both operands have to be integers/numbers, but they don't have to be of the same type
+* `>` - Checks if numeric operand 1 is greater than numeric operand 2
+* `<` - Checks if numeric operand 1 is lesser than numeric operand 2
+* `>=` - Checks if numeric operand 1 is greater than or equal to numeric operand 2
+* `<=` - Checks if numeric operand 1 is lesser than or equal to numeric operand 2
+* `=` - Checks if operand 1 and 2 have the same value
+* `!=` - Checks if operand 1 and 2 don't have the same value
 
 ## Function Statements
 
